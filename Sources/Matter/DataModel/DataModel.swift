@@ -190,7 +190,7 @@ public actor DataModel {
     public func emit(endpoint: EndpointNumber, cluster: ClusterID, event: EventID, priority: EventDefinition.Priority,
                      data: TLVValue, fabricIndex: FabricIndex? = nil) -> EventRecord {
         let record = EventRecord(number: nextEventNumber, endpoint: endpoint, cluster: cluster, event: event, priority: priority,
-                                 timestamp: UInt64(Date().timeIntervalSince1970 * 1000), data: data, fabricIndex: fabricIndex)
+                                 timestamp: currentMilliseconds(), data: data, fabricIndex: fabricIndex)
         nextEventNumber += 1
         events.append(record)
         if events.count > maxEvents { events.removeFirst(events.count - maxEvents) }
@@ -229,4 +229,9 @@ public actor DataModel {
             self?.publish(.attributes(endpoint, cluster, attributes))
         }
     }
+}
+
+/// Milliseconds since the Unix epoch.
+public func currentMilliseconds() -> UInt64 {
+    UInt64(Date().timeIntervalSince1970 * 1000)
 }

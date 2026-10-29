@@ -130,18 +130,3 @@ public protocol AccessController: Sendable {
     /// The highest privilege the session holds on the target, or nil for none.
     func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) async -> Privilege?
 }
-
-/// Grants by ACL entries; a PASE session holds Administer implicitly while commissioning (Core §6.6.2.9).
-public actor AccessControlList: AccessController {
-    public private(set) var entries: [AccessControlEntry] = []
-
-    public init(entries: [AccessControlEntry] = []) { self.entries = entries }
-
-    public func setEntries(_ entries: [AccessControlEntry]) { self.entries = entries }
-
-    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Privilege? {
-        if session.kind == .pase { return .administer }
-        return entries.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }
-            .map(\.privilege).max()
-    }
-}
