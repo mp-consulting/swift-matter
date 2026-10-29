@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Development commands for swift-matter. Run `bin/dev help` for the list.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+# Files under ~/Documents carry Finder metadata that codesign rejects: build outside the checkout on macOS.
+if [[ "$(uname)" == "Darwin" ]]; then
+    SCRATCH="${SWIFT_MATTER_SCRATCH:-$HOME/Library/Caches/swift-matter-build}"
+else
+    SCRATCH="${SWIFT_MATTER_SCRATCH:-.build}"
+fi
+SWIFT=(swift)
+
+usage() {
+    cat <<USAGE
+Usage: bin/dev <command> [arguments]
+
+  build [args]          Build the package (debug)
+  release               Build the package in release mode
+  test [filter]         Run the tests, optionally only those matching a filter
+  demo [args]           Run matter-bridge-demo (a bridge of virtual lights and sensors)
+  interop [args]        Commission the running demo with matter.js's controller shell and toggle a light
+  lint                  Check for trailing whitespace, tabs and stray debugging prints
+  clean                 Remove the build directory
+  resolve               Resolve and update the package's dependencies
+  help                  Show this help
+
+The build directory is $SCRATCH (SWIFT_MATTER_SCRATCH overrides it).
+USAGE
+}
+
+command="${1:-help}"
+shift || true
+
+case "$command" in
+    build) "${SWIFT[@]}" build --scratch-path "$SCRATCH" "$@" ;;
+    release) "${SWIFT[@]}" build --scratch-path "$SCRATCH" -c release "$@" ;;
+    test)
+        if [[ $# -gt 0 ]]; then
+            "${SWIFT[@]}" test --scratch-path "$SCRATCH" --filter "$1" "${@:2}"
+        else
+            "${SWIFT[@]}" test --scratch-path "$SCRATCH"
+        fi
+        ;;
+    demo) "${SWIFT[@]}" run --scratch-path "$SCRATCH" matter-bridge-demo "$@" ;;
+    interop) Scripts/interop.sh "$@" ;;
+    lint)
+        status=0
+        if grep -rnE '[[:space:]]+$' Sources Tests Package.swift; then echo "Trailing whitespace above"; status=1; fi
+        if grep -rn $'\t' Sources Tests Package.swift; then echo "Tabs above"; status=1; fi
+        if grep -rnE '^\s*(print|debugPrint|dump)\(' Sources --include='*.swift' | grep -v 'Sources/MatterBridgeDemo'; then
+            echo "Debugging prints above (log through swift-log instead)"; status=1
+        fi
+        exit $status
+        ;;
+    clean) rm -rf "$SCRATCH" ;;
+    resolve) "${SWIFT[@]}" package --scratch-path "$SCRATCH" update ;;
+    help | -h | --help) usage ;;
+    *) echo "Unknown command: $command" >&2; usage >&2; exit 1 ;;
+esac
