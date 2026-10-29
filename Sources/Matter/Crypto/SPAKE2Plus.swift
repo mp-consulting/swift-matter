@@ -5,6 +5,13 @@ import Crypto
 public enum SPAKE2Plus {
     static let m = try! P256Point(sec1: hex("02886e2f97ace46e55ba9dd7242579f2993b64e16ef3dcab95afd497333d8fa12f"))
     static let n = try! P256Point(sec1: hex("03d8bbd6c639c62937b04d997f38c3770719c629d7014d49a24b4f98baa1292b49"))
+    static let mEncoded = try! m.sec1Uncompressed()
+    static let nEncoded = try! n.sec1Uncompressed()
+
+    /// scalar·G through swift-crypto, which is faster than the ladder and constant-time.
+    static func generatorMultiple(_ scalar: P256Scalar) throws -> P256Point {
+        try P256Point(sec1: P256.KeyAgreement.PrivateKey(rawRepresentation: scalar.bytes).publicKey.x963Representation)
+    }
 
     /// The prefix of the context hash (Core §3.10.3).
     public static let contextPrefix = Array("CHIP PAKE V1 Commissioning".utf8)
@@ -41,7 +48,7 @@ public enum SPAKE2Plus {
     public static func verifier(passcode: UInt32, salt: [UInt8], iterations: Int) -> Verifier {
         let (w0, w1) = proverValues(passcode: passcode, salt: salt, iterations: iterations)
         let w1Scalar = try! P256Scalar(bytes: w1)
-        return Verifier(w0: w0, l: try! (w1Scalar.value * P256Point.generator).sec1Uncompressed())
+        return Verifier(w0: w0, l: try! generatorMultiple(w1Scalar).sec1Uncompressed())
     }
 
     /// The keys both sides derive from the transcript.
@@ -73,7 +80,7 @@ public enum SPAKE2Plus {
             self.w0 = try P256Scalar(bytes: w0)
             self.w1 = try P256Scalar(bytes: w1)
             x = try P256Scalar(bytes: random ?? SPAKE2Plus.randomScalar())
-            share = try (x.value * P256Point.generator + self.w0.value * SPAKE2Plus.m).sec1Uncompressed()
+            share = try (SPAKE2Plus.generatorMultiple(x) + self.w0.value * SPAKE2Plus.m).sec1Uncompressed()
         }
 
         /// The keys from the verifier's share pB.
@@ -100,7 +107,7 @@ public enum SPAKE2Plus {
             w0 = try P256Scalar(bytes: verifier.w0)
             l = try P256Point(sec1: verifier.l)
             y = try P256Scalar(bytes: random ?? SPAKE2Plus.randomScalar())
-            share = try (y.value * P256Point.generator + w0.value * SPAKE2Plus.n).sec1Uncompressed()
+            share = try (SPAKE2Plus.generatorMultiple(y) + w0.value * SPAKE2Plus.n).sec1Uncompressed()
         }
 
         /// The keys from the prover's share pA.
@@ -114,7 +121,7 @@ public enum SPAKE2Plus {
 
     static func keys(context: [UInt8], pA: [UInt8], pB: [UInt8], z: [UInt8], v: [UInt8], w0: [UInt8]) -> Keys {
         var transcript: [UInt8] = []
-        for part in [context, [], [], try! m.sec1Uncompressed(), try! n.sec1Uncompressed(), pA, pB, z, v, w0] {
+        for part in [context, [], [], mEncoded, nEncoded, pA, pB, z, v, w0] {
             transcript.appendLittleEndian(UInt64(part.count))
             transcript.append(contentsOf: part)
         }
@@ -127,13 +134,4 @@ public enum SPAKE2Plus {
             sharedSecret: Array(hash[16..<32])
         )
     }
-}
-
-func hex(_ string: String) -> [UInt8] {
-    var bytes: [UInt8] = []
-    var iterator = string.makeIterator()
-    while let high = iterator.next(), let low = iterator.next() {
-        bytes.append(UInt8(String([high, low]), radix: 16)!)
-    }
-    return bytes
 }

@@ -113,9 +113,8 @@ public indirect enum DER: Equatable, Sendable {
         var offset = 0
         var atEnd: Bool { offset == bytes.count }
 
-        /// The raw encoding of the next element, without parsing it.
-        mutating func nextRaw() throws -> (tag: UInt8, contents: [UInt8], raw: [UInt8]) {
-            let start = offset
+        /// The next element's tag and contents.
+        mutating func nextElement() throws -> (tag: UInt8, contents: [UInt8]) {
             guard offset < bytes.count else { throw DERError.truncated }
             let tag = bytes[offset]
             guard tag & 0x1F != 0x1F else { throw DERError.unsupported }
@@ -132,12 +131,12 @@ public indirect enum DER: Equatable, Sendable {
             guard length <= bytes.count - offset else { throw DERError.truncated }
             let contents = Array(bytes[offset..<offset + length])
             offset += length
-            return (tag, contents, Array(bytes[start..<offset]))
+            return (tag, contents)
         }
 
         mutating func next(depth: Int) throws -> DER {
             guard depth < 16 else { throw DERError.malformed }
-            let (tag, contents, _) = try nextRaw()
+            let (tag, contents) = try nextElement()
             func members() throws -> [DER] {
                 var reader = Reader(bytes: contents)
                 var out: [DER] = []
@@ -206,7 +205,6 @@ public enum DERError: Error, Equatable, Sendable {
     case malformed
     case unsupported
     case trailingBytes
-    case unexpectedStructure
 }
 
 /// The object identifiers Matter uses.

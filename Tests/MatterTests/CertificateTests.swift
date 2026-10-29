@@ -48,20 +48,23 @@ struct CertificateTests {
     @Test func signsAndVerifiesAChain() throws {
         let rootKey = P256.Signing.PrivateKey(), nodeKey = P256.Signing.PrivateKey()
         let rootPublic = Array(rootKey.publicKey.x963Representation)
+        let rootVerifier = rootKey.publicKey
         var root = MatterCertificate(
             serialNumber: [1], issuer: [.rcacID(1)], notBefore: 0, notAfter: 0, subject: [.rcacID(1)], publicKey: rootPublic,
             basicConstraints: .init(isCA: true), keyUsage: [.keyCertSign, .crlSign],
             subjectKeyID: MatterCertificate.keyIdentifier(rootPublic), authorityKeyID: MatterCertificate.keyIdentifier(rootPublic))
         try root.sign(with: rootKey)
-        #expect(root.isSigned(by: rootPublic))
+        #expect(root.isSigned(by: rootVerifier))
+        #expect(root.isValid(at: Date()))
 
         var noc = MatterCertificate(
             serialNumber: [0x80, 2], issuer: [.rcacID(1)], notBefore: 1000, notAfter: 2_000_000_000,
             subject: [.nodeID(5), .fabricID(1), .caseAuthenticatedTag(0x0001_0001)], publicKey: Array(nodeKey.publicKey.x963Representation),
             basicConstraints: .init(isCA: false), keyUsage: .digitalSignature, extendedKeyUsage: [2, 1])
         try noc.sign(with: rootKey)
-        #expect(noc.isSigned(by: rootPublic))
-        #expect(!noc.isSigned(by: Array(nodeKey.publicKey.x963Representation)))
+        #expect(noc.isSigned(by: root))
+        #expect(!noc.isSigned(by: nodeKey.publicKey))
+        #expect(!noc.isValid(at: Date(timeIntervalSince1970: MatterCertificate.epochOffset + 2_000_000_001)))
         // The TLV form round-trips, signature included.
         #expect(try MatterCertificate(tlv: noc.tlvEncoded) == noc)
         #expect(noc.caseAuthenticatedTags == [0x0001_0001])

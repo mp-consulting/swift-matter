@@ -35,6 +35,8 @@ struct U256: Equatable, Sendable {
 
     var isZero: Bool { limbs == .zero }
 
+    func isLess(than other: U256) -> Bool { subtracting(other).1 == 1 }
+
     func bit(_ index: Int) -> UInt64 { (limbs[index / 64] >> UInt64(index % 64)) & 1 }
 
     /// self + other, and the carry out.
@@ -77,6 +79,8 @@ struct MontgomeryField: Sendable {
     private let inverse: UInt64
     /// R^2 mod modulus.
     private let rSquared: U256
+    /// The Montgomery form of 1 (R mod modulus).
+    let one: U256
 
     init(modulus: U256) {
         self.modulus = modulus
@@ -87,6 +91,7 @@ struct MontgomeryField: Sendable {
         var value = U256.zero.subtracting(modulus).0
         for _ in 0..<256 { value = Self.addMod(value, value, modulus) }
         rSquared = value
+        one = U256.zero.subtracting(modulus).0
     }
 
     private static func addMod(_ a: U256, _ b: U256, _ modulus: U256) -> U256 {
@@ -148,9 +153,6 @@ struct MontgomeryField: Sendable {
 
     func toMontgomery(_ a: U256) -> U256 { multiply(a, rSquared) }
     func fromMontgomery(_ a: U256) -> U256 { multiply(a, .one) }
-
-    /// The Montgomery form of 1.
-    var one: U256 { toMontgomery(.one) }
 
     /// base^exponent, both the base and the result in Montgomery form; the exponent is public.
     func power(_ base: U256, _ exponent: U256) -> U256 {
@@ -217,27 +219,25 @@ struct P256Point: Sendable {
         let bytes = Array(bytes)
         let field = Self.field
         guard bytes.count == 65 && bytes[0] == 0x04 || bytes.count == 33 && (bytes[0] == 0x02 || bytes[0] == 0x03),
-              let affineX = U256(bigEndian: bytes[1..<33]),
-              affineX.subtracting(field.modulus).1 == 1
+              let affineX = U256(bigEndian: bytes[1..<33]), affineX.isLess(than: field.modulus)
         else { throw P256Error.invalidPointEncoding }
 
         let mx = field.toMontgomery(affineX)
         let rightSide = field.add(field.multiply(field.square(mx), mx),
                                   field.add(field.negate(field.add(field.add(mx, mx), mx)), Self.b))
+        var my: U256
         if bytes.count == 65 {
-            guard let affineY = U256(bigEndian: bytes[33..<65]), affineY.subtracting(field.modulus).1 == 1
+            guard let affineY = U256(bigEndian: bytes[33..<65]), affineY.isLess(than: field.modulus)
             else { throw P256Error.invalidPointEncoding }
-            let my = field.toMontgomery(affineY)
-            guard field.square(my) == rightSide else { throw P256Error.pointNotOnCurve }
-            self.init(x: mx, y: my, z: field.one)
+            my = field.toMontgomery(affineY)
         } else {
             // p ≡ 3 (mod 4): a square root is rightSide^((p+1)/4).
             let exponent = U256(0, 0x0000_0000_4000_0000, 0x4000_0000_0000_0000, 0x3FFF_FFFF_C000_0000)
-            var my = field.power(rightSide, exponent)
-            guard field.square(my) == rightSide else { throw P256Error.pointNotOnCurve }
+            my = field.power(rightSide, exponent)
             if field.fromMontgomery(my).bit(0) != UInt64(bytes[0] & 1) { my = field.negate(my) }
-            self.init(x: mx, y: my, z: field.one)
         }
+        guard field.square(my) == rightSide else { throw P256Error.pointNotOnCurve }
+        self.init(x: mx, y: my, z: field.one)
     }
 
     var isIdentity: Bool { z.isZero }
@@ -337,7 +337,7 @@ struct P256Scalar: Sendable {
 
     /// Exactly 32 bytes below the order.
     init(bytes: some Collection<UInt8>) throws {
-        guard let value = U256(bigEndian: bytes), value.subtracting(P256Point.order.modulus).1 == 1
+        guard let value = U256(bigEndian: bytes), value.isLess(than: P256Point.order.modulus)
         else { throw P256Error.invalidScalar }
         self.value = value
     }

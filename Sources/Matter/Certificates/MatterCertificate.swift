@@ -12,18 +12,28 @@ public struct MatterCertificate: Hashable, Sendable {
         public enum Value: Hashable, Sendable {
             case string(String)
             case id(UInt64)
+
+            public var id: UInt64? { if case .id(let id) = self { id } else { nil } }
         }
+
+        /// The Matter-specific attribute tags (Core §6.1.1, table 85).
+        public static let nodeIDTag: UInt8 = 17
+        public static let icacIDTag: UInt8 = 19
+        public static let rcacIDTag: UInt8 = 20
+        public static let fabricIDTag: UInt8 = 21
+        public static let caseAuthenticatedTagTag: UInt8 = 22
+        static let matterTags: ClosedRange<UInt8> = 17...23
 
         public init(tag: UInt8, value: Value) {
             self.tag = tag
             self.value = value
         }
 
-        public static func nodeID(_ id: UInt64) -> Attribute { Attribute(tag: 17, value: .id(id)) }
-        public static func icacID(_ id: UInt64) -> Attribute { Attribute(tag: 19, value: .id(id)) }
-        public static func rcacID(_ id: UInt64) -> Attribute { Attribute(tag: 20, value: .id(id)) }
-        public static func fabricID(_ id: UInt64) -> Attribute { Attribute(tag: 21, value: .id(id)) }
-        public static func caseAuthenticatedTag(_ tag: UInt32) -> Attribute { Attribute(tag: 22, value: .id(UInt64(tag))) }
+        public static func nodeID(_ id: UInt64) -> Attribute { Attribute(tag: nodeIDTag, value: .id(id)) }
+        public static func icacID(_ id: UInt64) -> Attribute { Attribute(tag: icacIDTag, value: .id(id)) }
+        public static func rcacID(_ id: UInt64) -> Attribute { Attribute(tag: rcacIDTag, value: .id(id)) }
+        public static func fabricID(_ id: UInt64) -> Attribute { Attribute(tag: fabricIDTag, value: .id(id)) }
+        public static func caseAuthenticatedTag(_ tag: UInt32) -> Attribute { Attribute(tag: caseAuthenticatedTagTag, value: .id(UInt64(tag))) }
         public static func commonName(_ name: String) -> Attribute { Attribute(tag: 1, value: .string(name)) }
     }
 
@@ -86,17 +96,26 @@ public struct MatterCertificate: Hashable, Sendable {
 
     // MARK: - Subject values
 
-    private func id(_ tag: UInt8, in attributes: [Attribute]) -> UInt64? {
-        attributes.lazy.compactMap { $0.tag == tag ? { if case .id(let id) = $0.value { id } else { nil } }($0) : nil }.first
+    private func subjectID(_ tag: UInt8) -> UInt64? { subject.first { $0.tag == tag }?.value.id }
+
+    public var nodeID: UInt64? { subjectID(Attribute.nodeIDTag) }
+    public var fabricID: UInt64? { subjectID(Attribute.fabricIDTag) }
+    public var rcacID: UInt64? { subjectID(Attribute.rcacIDTag) }
+    public var icacID: UInt64? { subjectID(Attribute.icacIDTag) }
+    public var caseAuthenticatedTags: [UInt32] {
+        subject.filter { $0.tag == Attribute.caseAuthenticatedTagTag }.compactMap { $0.value.id.map(UInt32.init(truncatingIfNeeded:)) }
     }
 
-    public var nodeID: UInt64? { id(17, in: subject) }
-    public var fabricID: UInt64? { id(21, in: subject) }
-    public var rcacID: UInt64? { id(20, in: subject) }
-    public var icacID: UInt64? { id(19, in: subject) }
-    public var caseAuthenticatedTags: [UInt32] {
-        subject.compactMap { $0.tag == 22 ? { if case .id(let id) = $0.value { UInt32(truncatingIfNeeded: id) } else { nil } }($0) : nil }
+    public var notBeforeDate: Date { Date(timeIntervalSince1970: Self.epochOffset + TimeInterval(notBefore)) }
+    /// Nil when the certificate does not expire.
+    public var notAfterDate: Date? { notAfter == 0 ? nil : Date(timeIntervalSince1970: Self.epochOffset + TimeInterval(notAfter)) }
+
+    public func isValid(at date: Date) -> Bool {
+        date >= notBeforeDate && notAfterDate.map { date <= $0 } ?? true
     }
+
+    /// The subject's public key, checked to be a P-256 point when the certificate was decoded.
+    public var signingKey: P256.Signing.PublicKey { get throws { try P256.Signing.PublicKey(x963Representation: publicKey) } }
 
     // MARK: - TLV
 
@@ -146,7 +165,7 @@ public struct MatterCertificate: Hashable, Sendable {
                 guard case .context(let number) = element.tag else { throw CertificateError.invalidName }
                 switch (number, element.value) {
                 case (1...16, .utf8(let string)), (129...143, .utf8(let string)): return Attribute(tag: number, value: .string(string))
-                case (17...23, .unsigned(let id)): return Attribute(tag: number, value: .id(id))
+                case (Attribute.matterTags, .unsigned(let id)): return Attribute(tag: number, value: .id(id))
                 default: throw CertificateError.invalidName
                 }
             }
@@ -155,7 +174,9 @@ public struct MatterCertificate: Hashable, Sendable {
         let serialNumber = try fields.bytes(1)
         guard serialNumber.count <= 20 else { throw CertificateError.invalidField }
         let publicKey = try fields.bytes(9)
-        guard publicKey.count == 65 else { throw CertificateError.invalidPublicKey }
+        guard publicKey.count == 65, (try? P256.Signing.PublicKey(x963Representation: publicKey)) != nil else {
+            throw CertificateError.invalidPublicKey
+        }
         let signature = try fields.bytes(11)
         guard signature.count == 64 else { throw CertificateError.invalidSignature }
 
@@ -241,11 +262,15 @@ public struct MatterCertificate: Hashable, Sendable {
     }
 
     /// Whether the signature verifies with the issuer's public key.
-    public func isSigned(by issuerPublicKey: [UInt8]) -> Bool {
-        guard let key = try? P256.Signing.PublicKey(x963Representation: issuerPublicKey),
-              let signature = try? P256.Signing.ECDSASignature(rawRepresentation: signature)
-        else { return false }
-        return key.isValidSignature(signature, for: tbsCertificate.encoded)
+    public func isSigned(by issuerKey: P256.Signing.PublicKey) -> Bool {
+        guard let signature = try? P256.Signing.ECDSASignature(rawRepresentation: signature) else { return false }
+        return issuerKey.isValidSignature(signature, for: tbsCertificate.encoded)
+    }
+
+    /// Whether the signature verifies with the issuer certificate's key.
+    public func isSigned(by issuer: MatterCertificate) -> Bool {
+        guard let key = try? issuer.signingKey else { return false }
+        return isSigned(by: key)
     }
 
     static func subjectPublicKeyInfo(_ publicKey: [UInt8]) -> DER {
@@ -272,10 +297,9 @@ public struct MatterCertificate: Hashable, Sendable {
             let pair: [DER]
             switch attribute.value {
             case .id(let id):
-                let width = attribute.tag == 22 ? 8 : 16
-                let hex = String(id, radix: 16, uppercase: true)
-                let padded = String(repeating: "0", count: max(0, width - hex.count)) + hex
-                pair = [.objectIdentifier(.init("1.3.6.1.4.1.37244.1.\(attribute.tag - 16)")), .utf8String(padded)]
+                let width = attribute.tag == Attribute.caseAuthenticatedTagTag ? 8 : 16
+                pair = [.objectIdentifier(.init("1.3.6.1.4.1.37244.1.\(attribute.tag - 16)")),
+                        .utf8String(zeroPadded(id, width: width, radix: 16))]
             case .string(let string):
                 let base = attribute.tag & 0x7F
                 let oid = DER.ObjectIdentifier(standardAttributeOIDs[base] ?? "2.5.4.3")
@@ -319,5 +343,4 @@ public enum CertificateError: Error, Equatable, Sendable {
     case invalidPublicKey
     case invalidSignature
     case invalidExtension
-    case invalidChain(String)
 }

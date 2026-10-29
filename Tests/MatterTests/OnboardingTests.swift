@@ -36,7 +36,9 @@ struct OnboardingTests {
         let payload = SetupPayload(vendorID: 9050, productID: 65279, flow: .custom, discriminator: 2976, passcode: 34567890)
         #expect(payload.manualCode.count == 21)
         #expect(try SetupPayload.parse(manualCode: payload.manualCode).passcode == 34567890)
-        #expect(try SetupPayload.parse(manualCode: "749701123365524327693").passcode == 20202021)
+        let long = try SetupPayload.parse(manualCode: "749701123365524327693")
+        #expect(long.passcode == 20202021)
+        #expect(long.vendorID == 0xFFF4)
     }
 
     @Test func rejectsInvalidManualCodes() {

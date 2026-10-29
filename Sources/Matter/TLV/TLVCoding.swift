@@ -109,9 +109,8 @@ public struct TLVDecoder {
 
     /// Decodes exactly one element that spans all of `bytes`.
     public static func decode(_ bytes: some Collection<UInt8>) throws -> TLVElement {
-        var decoder = TLVDecoder(bytes: Array(bytes))
-        let element = try decoder.next(depth: 0)
-        guard decoder.offset == decoder.bytes.count else { throw TLVError.trailingBytes }
+        let (element, length) = try decodePrefix(bytes)
+        guard length == bytes.count else { throw TLVError.trailingBytes }
         return element
     }
 
@@ -207,15 +206,5 @@ public struct TLVDecoder {
         }
         guard length <= UInt64(bytes.count - offset) else { throw TLVError.truncated }
         return Int(length)
-    }
-}
-
-extension Array where Element == UInt8 {
-    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        Swift.withUnsafeBytes(of: value.littleEndian) { append(contentsOf: $0) }
-    }
-
-    mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
-        Swift.withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
     }
 }

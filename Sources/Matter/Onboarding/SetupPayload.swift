@@ -102,14 +102,27 @@ public struct SetupPayload: Hashable, Sendable {
         let first = (includesIDs ? 1 << 2 : 0) | UInt32(discriminator >> 10)
         let second = UInt32(discriminator & 0x300) << 6 | passcode & 0x3FFF
         let third = passcode >> 14
-        var digits = String(first) + padded(second, 5) + padded(third, 4)
-        if includesIDs { digits += padded(UInt32(vendorID), 5) + padded(UInt32(productID), 5) }
+        var digits = String(first) + zeroPadded(second, width: 5) + zeroPadded(third, width: 4)
+        if includesIDs { digits += zeroPadded(vendorID, width: 5) + zeroPadded(productID, width: 5) }
         return digits + String(Verhoeff.checkDigit(digits))
     }
 
-    /// The values a manual code carries: the short discriminator and the passcode.
-    public static func parse(manualCode: String) throws -> (shortDiscriminator: UInt8, passcode: UInt32) {
-        let digits = manualCode.filter(\.isNumber)
+    /// The values of a manual pairing code.
+    public static func parse(manualCode: String) throws -> ManualPairingCode {
+        try ManualPairingCode(manualCode)
+    }
+}
+
+/// What a manual pairing code carries (Core §5.1.4): only the discriminator's upper four bits, and the vendor and
+/// product ids in its 21-digit form.
+public struct ManualPairingCode: Hashable, Sendable {
+    public var shortDiscriminator: UInt8
+    public var passcode: UInt32
+    public var vendorID: UInt16?
+    public var productID: UInt16?
+
+    public init(_ code: String) throws {
+        let digits = code.filter(\.isNumber)
         guard digits.count == 11 || digits.count == 21 else { throw SetupPayloadError.invalidLength }
         guard Verhoeff.checkDigit(String(digits.dropLast())) == digits.last!.wholeNumberValue! else {
             throw SetupPayloadError.invalidCheckDigit
@@ -118,16 +131,16 @@ public struct SetupPayload: Hashable, Sendable {
         func value(_ range: Range<Int>) -> UInt32 { numbers[range].reduce(0) { $0 * 10 + $1 } }
         let first = value(0..<1), second = value(1..<6), third = value(6..<10)
         guard first <= 7, second <= 0xFFFF, third <= 0x1FFF else { throw SetupPayloadError.invalidDigits }
-        let passcode = third << 14 | second & 0x3FFF
-        guard isValid(passcode: passcode) else { throw SetupPayloadError.invalidPasscode }
+        passcode = third << 14 | second & 0x3FFF
+        guard SetupPayload.isValid(passcode: passcode) else { throw SetupPayloadError.invalidPasscode }
         // The short discriminator's two upper bits are in the first digit, the next two in the second group.
-        let shortDiscriminator = UInt8((first & 0x3) << 2 | second >> 14)
-        return (shortDiscriminator, passcode)
-    }
-
-    private func padded(_ value: UInt32, _ width: Int) -> String {
-        let string = String(value)
-        return String(repeating: "0", count: max(0, width - string.count)) + string
+        shortDiscriminator = UInt8((first & 0x3) << 2 | second >> 14)
+        if digits.count == 21 {
+            guard first & 0x4 != 0, let vendor = UInt16(exactly: value(10..<15)), let product = UInt16(exactly: value(15..<20))
+            else { throw SetupPayloadError.invalidDigits }
+            vendorID = vendor
+            productID = product
+        }
     }
 }
 

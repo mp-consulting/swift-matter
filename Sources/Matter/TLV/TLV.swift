@@ -118,43 +118,24 @@ public struct TLVStruct: Sendable {
 
     public subscript(tag: UInt8) -> TLVValue? { value[tag] }
 
-    public func uint(_ tag: UInt8) throws -> UInt64 {
-        guard let value = value[tag]?.uint else { throw TLVError.field(tag) }
+    private func field<T>(_ tag: UInt8, _ read: (TLVValue) -> T?) throws -> T {
+        guard let value = value[tag].flatMap(read) else { throw TLVError.field(tag) }
         return value
     }
+
+    public func uint(_ tag: UInt8) throws -> UInt64 { try field(tag, \.uint) }
+    public func int(_ tag: UInt8) throws -> Int64 { try field(tag, \.int) }
+    public func bytes(_ tag: UInt8) throws -> [UInt8] { try field(tag, \.bytes) }
+    public func string(_ tag: UInt8) throws -> String { try field(tag, \.string) }
+    public func bool(_ tag: UInt8) throws -> Bool { try field(tag, \.bool) }
+    public func elements(_ tag: UInt8) throws -> [TLVElement] { try field(tag, \.elements) }
 
     public func uint<T: FixedWidthInteger & UnsignedInteger>(_ tag: UInt8, as type: T.Type) throws -> T {
-        guard let value = T(exactly: try uint(tag)) else { throw TLVError.field(tag) }
-        return value
-    }
-
-    public func int(_ tag: UInt8) throws -> Int64 {
-        guard let value = value[tag]?.int else { throw TLVError.field(tag) }
-        return value
-    }
-
-    public func bytes(_ tag: UInt8) throws -> [UInt8] {
-        guard let value = value[tag]?.bytes else { throw TLVError.field(tag) }
-        return value
-    }
-
-    public func string(_ tag: UInt8) throws -> String {
-        guard let value = value[tag]?.string else { throw TLVError.field(tag) }
-        return value
-    }
-
-    public func bool(_ tag: UInt8) throws -> Bool {
-        guard let value = value[tag]?.bool else { throw TLVError.field(tag) }
-        return value
+        try field(tag) { $0.uint.flatMap { T(exactly: $0) } }
     }
 
     public func structure(_ tag: UInt8) throws -> TLVStruct {
         guard let value = value[tag] else { throw TLVError.field(tag) }
         return try TLVStruct(value)
-    }
-
-    public func elements(_ tag: UInt8) throws -> [TLVElement] {
-        guard let value = value[tag]?.elements else { throw TLVError.field(tag) }
-        return value
     }
 }

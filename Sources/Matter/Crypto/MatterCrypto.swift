@@ -20,8 +20,8 @@ public enum MatterCrypto {
     }
 
     public static func random(_ count: Int) -> [UInt8] {
-        var generator = SystemRandomNumberGenerator()
-        return (0..<count).map { _ in UInt8.random(in: 0...255, using: &generator) }
+        guard count > 0 else { return [] }
+        return SymmetricKey(size: SymmetricKeySize(bitCount: count * 8)).withUnsafeBytes { Array($0) }
     }
 
     /// Constant-time comparison of secrets.
@@ -29,32 +29,14 @@ public enum MatterCrypto {
         guard a.count == b.count else { return false }
         return zip(a, b).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
-
-    /// One AES-128 block encryption.
-    static func aesBlock(_ block: inout [UInt8], key: SymmetricKey) {
-        try! AES.permute(&block, key: key)
-    }
 }
 
 /// PBKDF2 with HMAC-SHA256 (NIST SP 800-132), Matter's Crypto_PBKDF (Core §3.9).
 public enum PBKDF2 {
+    /// Matter's iteration counts (1,000 to 100,000) are below the checked API's minimum, hence the unchecked rounds.
     public static func sha256(password: [UInt8], salt: [UInt8], iterations: Int, length: Int) -> [UInt8] {
-        let key = SymmetricKey(data: password)
-        var output: [UInt8] = []
-        var blockIndex: UInt32 = 1
-        while output.count < length {
-            var u = Array(HMAC<SHA256>.authenticationCode(for: salt + withUnsafeBytes(of: blockIndex.bigEndian, Array.init), using: key))
-            var block = u
-            if iterations > 1 {
-                for _ in 1..<iterations {
-                    u = Array(HMAC<SHA256>.authenticationCode(for: u, using: key))
-                    for index in block.indices { block[index] ^= u[index] }
-                }
-            }
-            output += block
-            blockIndex += 1
-        }
-        return Array(output.prefix(length))
+        try! KDF.Insecure.PBKDF2.deriveKey(from: password, salt: salt, using: .sha256, outputByteCount: length,
+                                           unsafeUncheckedRounds: iterations).withUnsafeBytes { Array($0) }
     }
 }
 
@@ -83,9 +65,7 @@ public struct AESCCM: Sendable {
     public func seal(_ plaintext: [UInt8], nonce: [UInt8], additionalData: [UInt8] = []) throws -> [UInt8] {
         try checkInput(nonce: nonce, length: plaintext.count, additionalData: additionalData)
         let tag = mac(plaintext, nonce: nonce, additionalData: additionalData)
-        var output = ctr(plaintext, nonce: nonce, startingAt: 1)
-        output += zip(tag, ctr(Array(repeating: 0, count: tagLength), nonce: nonce, startingAt: 0)).map { $0 ^ $1 }
-        return output
+        return ctr(plaintext, nonce: nonce, startingAt: 1) + ctr(tag, nonce: nonce, startingAt: 0)
     }
 
     /// The plaintext of a ciphertext followed by its MIC.
@@ -94,7 +74,7 @@ public struct AESCCM: Sendable {
         let ciphertext = Array(sealed.dropLast(tagLength))
         try checkInput(nonce: nonce, length: ciphertext.count, additionalData: additionalData)
         let plaintext = ctr(ciphertext, nonce: nonce, startingAt: 1)
-        let tag = zip(sealed.suffix(tagLength), ctr(Array(repeating: 0, count: tagLength), nonce: nonce, startingAt: 0)).map { $0 ^ $1 }
+        let tag = ctr(Array(sealed.suffix(tagLength)), nonce: nonce, startingAt: 0)
         guard MatterCrypto.equal(tag, mac(plaintext, nonce: nonce, additionalData: additionalData)) else {
             throw AESCCMError.authenticationFailed
         }
@@ -118,25 +98,17 @@ public struct AESCCM: Sendable {
         }
         input += plaintext
         input += Array(repeating: 0, count: (16 - input.count % 16) % 16)
-
-        var state = [UInt8](repeating: 0, count: 16)
-        for start in stride(from: 0, to: input.count, by: 16) {
-            for index in 0..<16 { state[index] ^= input[start + index] }
-            MatterCrypto.aesBlock(&state, key: key)
-        }
-        return Array(state.prefix(tagLength))
+        // CBC-MAC: the last block of AES-CBC with a zero IV.
+        let chained = try! AES._CBC.encrypt(input, using: key, iv: AES._CBC.IV(ivBytes: [UInt8](repeating: 0, count: 16)), noPadding: true)
+        return Array(chained.suffix(16).prefix(tagLength))
     }
 
+    /// CTR mode from counter block A_i (flags with L - 1, the nonce, i); messages are short enough that the 16-bit
+    /// counter never carries into the nonce.
     private func ctr(_ input: [UInt8], nonce: [UInt8], startingAt counter: UInt16) -> [UInt8] {
-        var output = input
-        var counter = counter
-        for start in stride(from: 0, to: input.count, by: 16) {
-            var block: [UInt8] = [0x01] + nonce
-            block.appendBigEndian(counter)
-            MatterCrypto.aesBlock(&block, key: key)
-            for index in start..<min(start + 16, input.count) { output[index] ^= block[index - start] }
-            counter &+= 1
-        }
-        return output
+        guard !input.isEmpty else { return [] }
+        var block: [UInt8] = [0x01] + nonce
+        block.appendBigEndian(counter)
+        return Array(try! AES._CTR.encrypt(input, using: key, nonce: AES._CTR.Nonce(nonceBytes: block)))
     }
 }
