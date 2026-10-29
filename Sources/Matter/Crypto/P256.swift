@@ -1,7 +1,9 @@
+import CP256
+
 /// NIST P-256 point arithmetic for SPAKE2+, which needs scalar multiples of arbitrary points and point additions that
-/// swift-crypto does not expose. Coordinates are in Montgomery form over 4×64-bit limbs; point addition uses the
-/// complete formulas of Renes, Costello and Batina (2015, algorithm 4, a = -3), so doubling and the identity need no
-/// branches, and scalar multiplication is a Montgomery ladder with constant-time swaps.
+/// swift-crypto does not expose. Coordinates are in Montgomery form over 4×64-bit limbs; the hot paths (Montgomery
+/// multiplication, point addition with the complete formulas of Renes, Costello and Batina, the constant-time ladder)
+/// are in the CP256 C target, and this file holds encoding, decoding and the slower one-off operations.
 
 /// A 256-bit unsigned integer, least significant limb first.
 struct U256: Equatable, Sendable {
@@ -9,6 +11,10 @@ struct U256: Equatable, Sendable {
 
     init(_ l0: UInt64, _ l1: UInt64, _ l2: UInt64, _ l3: UInt64) { limbs = SIMD4(l0, l1, l2, l3) }
     init(limbs: SIMD4<UInt64>) { self.limbs = limbs }
+
+    init(array: [UInt64]) { limbs = SIMD4(array[0], array[1], array[2], array[3]) }
+
+    var array: [UInt64] { [limbs[0], limbs[1], limbs[2], limbs[3]] }
 
     static let zero = U256(0, 0, 0, 0)
     static let one = U256(1, 0, 0, 0)
@@ -112,41 +118,11 @@ struct MontgomeryField: Sendable {
 
     func negate(_ a: U256) -> U256 { subtract(.zero, a) }
 
-    /// a·b·R^-1 mod m (CIOS).
+    /// a·b·R^-1 mod m (CIOS, in CP256).
     func multiply(_ a: U256, _ b: U256) -> U256 {
-        var t = SIMD8<UInt64>()
-        let n = modulus.limbs
-        for i in 0..<4 {
-            var carry: UInt64 = 0
-            for j in 0..<4 {
-                let (high, low) = a.limbs[j].multipliedFullWidth(by: b.limbs[i])
-                let (sum1, overflow1) = low.addingReportingOverflow(t[j])
-                let (sum2, overflow2) = sum1.addingReportingOverflow(carry)
-                t[j] = sum2
-                carry = high &+ (overflow1 ? 1 : 0) &+ (overflow2 ? 1 : 0)
-            }
-            let (sum, overflow) = t[4].addingReportingOverflow(carry)
-            t[4] = sum
-            t[5] = overflow ? 1 : 0
-
-            let m = t[0] &* inverse
-            let (high0, low0) = m.multipliedFullWidth(by: n[0])
-            carry = high0 &+ (low0.addingReportingOverflow(t[0]).overflow ? 1 : 0)
-            for j in 1..<4 {
-                let (high, low) = m.multipliedFullWidth(by: n[j])
-                let (sum1, overflow1) = low.addingReportingOverflow(t[j])
-                let (sum2, overflow2) = sum1.addingReportingOverflow(carry)
-                t[j - 1] = sum2
-                carry = high &+ (overflow1 ? 1 : 0) &+ (overflow2 ? 1 : 0)
-            }
-            let (sum3, overflow3) = t[4].addingReportingOverflow(carry)
-            t[3] = sum3
-            t[4] = t[5] &+ (overflow3 ? 1 : 0)
-        }
-        let value = U256(t[0], t[1], t[2], t[3])
-        let (reduced, borrow) = value.subtracting(modulus)
-        let keepReduced = (0 &- t[4]) | (0 &- (1 &- borrow))
-        return U256.select(keepReduced, reduced, value)
+        var result = [UInt64](repeating: 0, count: 4)
+        cp256_mont_mul(&result, a.array, b.array, modulus.array, inverse)
+        return U256(array: result)
     }
 
     func square(_ a: U256) -> U256 { multiply(a, a) }
@@ -251,49 +227,17 @@ struct P256Point: Sendable {
             + field.fromMontgomery(field.multiply(y, zInverse)).bigEndianBytes
     }
 
+    var array: [UInt64] { x.array + y.array + z.array }
+
+    init(array: [UInt64]) {
+        self.init(x: U256(array: Array(array[0..<4])), y: U256(array: Array(array[4..<8])), z: U256(array: Array(array[8..<12])))
+    }
+
+    /// Complete addition (Renes, Costello and Batina, algorithm 4), in CP256.
     static func + (p: P256Point, q: P256Point) -> P256Point {
-        let f = field
-        var t0 = f.multiply(p.x, q.x), t1 = f.multiply(p.y, q.y), t2 = f.multiply(p.z, q.z)
-        var t3 = f.add(p.x, p.y), t4 = f.add(q.x, q.y)
-        t3 = f.multiply(t3, t4)
-        t4 = f.add(t0, t1)
-        t3 = f.subtract(t3, t4)
-        t4 = f.add(p.y, p.z)
-        var x3 = f.add(q.y, q.z)
-        t4 = f.multiply(t4, x3)
-        x3 = f.add(t1, t2)
-        t4 = f.subtract(t4, x3)
-        x3 = f.add(p.x, p.z)
-        var y3 = f.add(q.x, q.z)
-        x3 = f.multiply(x3, y3)
-        y3 = f.add(t0, t2)
-        y3 = f.subtract(x3, y3)
-        var z3 = f.multiply(b, t2)
-        x3 = f.subtract(y3, z3)
-        z3 = f.add(x3, x3)
-        x3 = f.add(x3, z3)
-        z3 = f.subtract(t1, x3)
-        x3 = f.add(t1, x3)
-        y3 = f.multiply(b, y3)
-        t1 = f.add(t2, t2)
-        t2 = f.add(t1, t2)
-        y3 = f.subtract(y3, t2)
-        y3 = f.subtract(y3, t0)
-        t1 = f.add(y3, y3)
-        y3 = f.add(t1, y3)
-        t1 = f.add(t0, t0)
-        t0 = f.add(t1, t0)
-        t0 = f.subtract(t0, t2)
-        t1 = f.multiply(t4, y3)
-        t2 = f.multiply(t0, y3)
-        y3 = f.multiply(x3, z3)
-        y3 = f.add(y3, t2)
-        x3 = f.multiply(t3, x3)
-        x3 = f.subtract(x3, t1)
-        z3 = f.multiply(t4, z3)
-        t1 = f.multiply(t3, t0)
-        z3 = f.add(z3, t1)
-        return P256Point(x: x3, y: y3, z: z3)
+        var result = [UInt64](repeating: 0, count: 12)
+        cp256_point_add(&result, p.array, q.array)
+        return P256Point(array: result)
     }
 
     static prefix func - (p: P256Point) -> P256Point {
@@ -302,23 +246,11 @@ struct P256Point: Sendable {
 
     static func - (p: P256Point, q: P256Point) -> P256Point { p + -q }
 
-    /// scalar·point by a Montgomery ladder over all 256 bits.
+    /// scalar·point by a Montgomery ladder over all 256 bits with constant-time swaps, in CP256.
     static func * (scalar: U256, point: P256Point) -> P256Point {
-        var r0 = identity, r1 = point
-        for index in (0..<256).reversed() {
-            let mask = 0 &- scalar.bit(index)
-            swap(mask, &r0, &r1)
-            r1 = r0 + r1
-            r0 = r0 + r0
-            swap(mask, &r0, &r1)
-        }
-        return r0
-    }
-
-    private static func swap(_ mask: UInt64, _ a: inout P256Point, _ b: inout P256Point) {
-        let newA = P256Point(x: U256.select(mask, b.x, a.x), y: U256.select(mask, b.y, a.y), z: U256.select(mask, b.z, a.z))
-        b = P256Point(x: U256.select(mask, a.x, b.x), y: U256.select(mask, a.y, b.y), z: U256.select(mask, a.z, b.z))
-        a = newA
+        var result = [UInt64](repeating: 0, count: 12)
+        cp256_point_mul(&result, scalar.array, point.array)
+        return P256Point(array: result)
     }
 
     /// Projective equality.
