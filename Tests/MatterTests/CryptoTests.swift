@@ -86,14 +86,15 @@ struct SPAKE2PlusTests {
 
     @Test func passcodeDerivedValuesAgree() throws {
         let salt = Array("SPAKE2P Key Salt".utf8)
-        let (w0, w1) = SPAKE2Plus.proverValues(passcode: 20202021, salt: salt, iterations: 1000)
-        let verifier = SPAKE2Plus.verifier(passcode: 20202021, salt: salt, iterations: 1000)
+        let (w0, w1) = try SPAKE2Plus.proverValues(passcode: 20202021, salt: salt, iterations: 1000)
+        let verifier = try SPAKE2Plus.verifier(passcode: 20202021, salt: salt, iterations: 1000)
+        #expect(throws: PBKDF2Error.invalidIterations) { try SPAKE2Plus.proverValues(passcode: 20202021, salt: salt, iterations: 0) }
         #expect(verifier.w0 == w0)
         let prover = try SPAKE2Plus.Prover(context: context, w0: w0, w1: w1)
         let session = try SPAKE2Plus.VerifierSession(context: context, verifier: verifier)
         #expect(try prover.keys(verifierShare: session.share) == session.keys(proverShare: prover.share))
 
-        let wrong = SPAKE2Plus.proverValues(passcode: 20202022, salt: salt, iterations: 1000)
+        let wrong = try SPAKE2Plus.proverValues(passcode: 20202022, salt: salt, iterations: 1000)
         let impostor = try SPAKE2Plus.Prover(context: context, w0: wrong.w0, w1: wrong.w1)
         #expect(try impostor.keys(verifierShare: session.share).confirmationA != session.keys(proverShare: impostor.share).confirmationA)
     }
@@ -118,6 +119,11 @@ struct AESCCMTests {
         #expect(try ccm.open(sealed, nonce: nonce, additionalData: header) == payload)
     }
 
+    @Test func rejectsInvalidTagLengths() {
+        #expect(throws: AESCCMError.invalidTagLength) { try AESCCM(key: MatterCrypto.random(16), tagLength: 0) }
+        #expect(throws: AESCCMError.invalidTagLength) { try AESCCM(key: MatterCrypto.random(16), tagLength: 17) }
+    }
+
     @Test func rejectsTampering() throws {
         let ccm = try AESCCM(key: MatterCrypto.random(16))
         let nonce = MatterCrypto.random(13)
@@ -140,8 +146,8 @@ struct AESCCMTests {
 
 struct PBKDF2Tests {
     /// RFC 7914, section 11.
-    @Test func matchesRFC7914() {
-        #expect(PBKDF2.sha256(password: Array("passwd".utf8), salt: Array("salt".utf8), iterations: 1, length: 64) == hex(
+    @Test func matchesRFC7914() throws {
+        #expect(try PBKDF2.sha256Unchecked(password: Array("passwd".utf8), salt: Array("salt".utf8), iterations: 1, length: 64) == hex(
             "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783"))
     }
 }

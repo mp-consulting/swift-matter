@@ -34,14 +34,29 @@ public enum MatterCrypto {
 /// PBKDF2 with HMAC-SHA256 (NIST SP 800-132), Matter's Crypto_PBKDF (Core §3.9).
 public enum PBKDF2 {
     /// Matter's iteration counts (1,000 to 100,000) are below the checked API's minimum, hence the unchecked rounds.
-    public static func sha256(password: [UInt8], salt: [UInt8], iterations: Int, length: Int) -> [UInt8] {
-        try! KDF.Insecure.PBKDF2.deriveKey(from: password, salt: salt, using: .sha256, outputByteCount: length,
-                                           unsafeUncheckedRounds: iterations).withUnsafeBytes { Array($0) }
+    public static let iterationRange = 1000...100_000
+
+    /// Throws when the iteration count is outside Matter's range (a commissioner gets it from the peer).
+    public static func sha256(password: [UInt8], salt: [UInt8], iterations: Int, length: Int) throws -> [UInt8] {
+        guard iterationRange.contains(iterations) else { throw PBKDF2Error.invalidIterations }
+        return try KDF.Insecure.PBKDF2.deriveKey(from: password, salt: salt, using: .sha256, outputByteCount: length,
+                                                 unsafeUncheckedRounds: iterations).withUnsafeBytes { Array($0) }
     }
+
+    /// Without Matter's iteration range, for test vectors.
+    static func sha256Unchecked(password: [UInt8], salt: [UInt8], iterations: Int, length: Int) throws -> [UInt8] {
+        try KDF.Insecure.PBKDF2.deriveKey(from: password, salt: salt, using: .sha256, outputByteCount: length,
+                                          unsafeUncheckedRounds: iterations).withUnsafeBytes { Array($0) }
+    }
+}
+
+public enum PBKDF2Error: Error, Equatable, Sendable {
+    case invalidIterations
 }
 
 public enum AESCCMError: Error, Equatable, Sendable {
     case invalidKey
+    case invalidTagLength
     case invalidNonce
     case tooLong
     case authenticationFailed
@@ -57,6 +72,7 @@ public struct AESCCM: Sendable {
 
     public init(key: [UInt8], tagLength: Int = AESCCM.micLength) throws {
         guard key.count == 16 else { throw AESCCMError.invalidKey }
+        guard (4...16).contains(tagLength), tagLength % 2 == 0 else { throw AESCCMError.invalidTagLength }
         self.key = SymmetricKey(data: key)
         self.tagLength = tagLength
     }

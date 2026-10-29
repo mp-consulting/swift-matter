@@ -37,18 +37,17 @@ public enum SPAKE2Plus {
     }
 
     /// (w0, w1) from the passcode (Core §3.10, Crypto_PAKEValues_Initiator).
-    public static func proverValues(passcode: UInt32, salt: [UInt8], iterations: Int) -> (w0: [UInt8], w1: [UInt8]) {
+    public static func proverValues(passcode: UInt32, salt: [UInt8], iterations: Int) throws -> (w0: [UInt8], w1: [UInt8]) {
         var input: [UInt8] = []
         input.appendLittleEndian(passcode)
-        let ws = PBKDF2.sha256(password: input, salt: salt, iterations: iterations, length: 80)
+        let ws = try PBKDF2.sha256(password: input, salt: salt, iterations: iterations, length: 80)
         return (P256Scalar(reducing: ws[0..<40]).bytes, P256Scalar(reducing: ws[40..<80]).bytes)
     }
 
     /// (w0, L) from the passcode (Crypto_PAKEValues_Responder).
-    public static func verifier(passcode: UInt32, salt: [UInt8], iterations: Int) -> Verifier {
-        let (w0, w1) = proverValues(passcode: passcode, salt: salt, iterations: iterations)
-        let w1Scalar = try! P256Scalar(bytes: w1)
-        return Verifier(w0: w0, l: try! generatorMultiple(w1Scalar).sec1Uncompressed())
+    public static func verifier(passcode: UInt32, salt: [UInt8], iterations: Int) throws -> Verifier {
+        let (w0, w1) = try proverValues(passcode: passcode, salt: salt, iterations: iterations)
+        return Verifier(w0: w0, l: try generatorMultiple(try P256Scalar(bytes: w1)).sec1Uncompressed())
     }
 
     /// The keys both sides derive from the transcript.

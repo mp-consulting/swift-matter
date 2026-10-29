@@ -122,7 +122,8 @@ public struct ManualPairingCode: Hashable, Sendable {
     public var productID: UInt16?
 
     public init(_ code: String) throws {
-        let digits = code.filter(\.isNumber)
+        // Only ASCII digits: other numeric characters ('½', '٣') have no single digit value.
+        let digits = code.filter { $0.isASCII && $0.isNumber }
         guard digits.count == 11 || digits.count == 21 else { throw SetupPayloadError.invalidLength }
         guard Verhoeff.checkDigit(String(digits.dropLast())) == digits.last!.wholeNumberValue! else {
             throw SetupPayloadError.invalidCheckDigit
@@ -135,8 +136,10 @@ public struct ManualPairingCode: Hashable, Sendable {
         guard SetupPayload.isValid(passcode: passcode) else { throw SetupPayloadError.invalidPasscode }
         // The short discriminator's two upper bits are in the first digit, the next two in the second group.
         shortDiscriminator = UInt8((first & 0x3) << 2 | second >> 14)
+        // The first digit's third bit says whether the vendor and product ids follow.
+        guard (first & 0x4 != 0) == (digits.count == 21) else { throw SetupPayloadError.invalidDigits }
         if digits.count == 21 {
-            guard first & 0x4 != 0, let vendor = UInt16(exactly: value(10..<15)), let product = UInt16(exactly: value(15..<20))
+            guard let vendor = UInt16(exactly: value(10..<15)), let product = UInt16(exactly: value(15..<20))
             else { throw SetupPayloadError.invalidDigits }
             vendorID = vendor
             productID = product

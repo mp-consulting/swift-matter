@@ -44,6 +44,10 @@ struct OnboardingTests {
     @Test func rejectsInvalidManualCodes() {
         #expect(throws: SetupPayloadError.invalidCheckDigit) { try SetupPayload.parse(manualCode: "34970112333") }
         #expect(throws: SetupPayloadError.invalidLength) { try SetupPayload.parse(manualCode: "3497011233") }
+        #expect(throws: SetupPayloadError.invalidLength) { try SetupPayload.parse(manualCode: "3497011233½") }
+        // The first digit says vendor and product ids follow, but the code has 11 digits.
+        let flagged = "7497011233"
+        #expect(throws: SetupPayloadError.invalidDigits) { try SetupPayload.parse(manualCode: flagged + String(Verhoeff.checkDigit(flagged))) }
         // Dashes and spaces are ignored.
         #expect(throws: Never.self) { try SetupPayload.parse(manualCode: "3497-011-2332") }
     }

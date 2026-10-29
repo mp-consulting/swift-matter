@@ -11,7 +11,7 @@ Clusters `23-27350-011`, Device Library `23-27351-011`). macOS 14+ and Linux. Li
 | Path | What it is |
 |---|---|
 | `Sources/Matter/TLV` | Matter TLV (Core Appendix A): `TLVValue`/`TLVElement`, `TLVEncoder`/`TLVDecoder`, `TLVStruct` for typed field access |
-| `Sources/Matter/Crypto` | `MatterCrypto` (KDF, HMAC, hash, constant-time compare), `AESCCM` (on swift-crypto's AES block function), `PBKDF2`, `P256` (point arithmetic swift-crypto keeps internal: Montgomery field, complete addition formulas, ladder), `SPAKE2Plus` (draft-02, Core §3.10) |
+| `Sources/Matter/Crypto` | `MatterCrypto` (KDF, HMAC, hash, constant-time compare), `AESCCM` (CBC-MAC and CTR from `_CryptoExtras`), `PBKDF2` (`_CryptoExtras`, Matter's iteration range), `P256` (point arithmetic swift-crypto keeps internal: Montgomery field, complete addition formulas, ladder), `SPAKE2Plus` (draft-02, Core §3.10) |
 | `Sources/Matter/Certificates` | `DER` (writer and reader), `OID`, `MatterCertificate` (RCAC/ICAC/NOC: TLV ↔ X.509 TBS, signing and verification) |
 | `Sources/Matter/Onboarding` | `SetupPayload`: QR code (`MT:` Base38), manual pairing code (Verhoeff), passcode rules |
 | `Tests/MatterTests` | Swift Testing suites; vectors from the specification, the SPAKE2+ draft, RFC 3610/7914 and matter.js's tests |
