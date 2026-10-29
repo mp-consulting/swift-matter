@@ -63,14 +63,20 @@ public final class UDPTransport: MatterTransport {
 
     public func start(receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) async throws {
         let inbox = DatagramInbox(receive: receive)
+        let bound: Channel
+        do {
+            bound = try await DatagramBootstrap(group: group)
+                .channelOption(.socketOption(.so_reuseaddr), value: 1)
+                .channelInitializer { channel in
+                    channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Inbound(inbox: inbox)) }
+                }
+                .bind(host: "::", port: port)
+                .get()
+        } catch {
+            inbox.close()
+            throw error
+        }
         self.inbox.withLockedValue { $0 = inbox }
-        let bound = try await DatagramBootstrap(group: group)
-            .channelOption(.socketOption(.so_reuseaddr), value: 1)
-            .channelInitializer { channel in
-                channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Inbound(inbox: inbox)) }
-            }
-            .bind(host: "::", port: port)
-            .get()
         channel.withLockedValue { $0 = bound }
     }
 

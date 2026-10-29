@@ -67,7 +67,7 @@ public enum PASE {
         let fields = try TLVStruct(decoding: request.payload)
         let initiatorRandom = try fields.bytes(1)
         let initiatorSessionID = try fields.uint(2, as: UInt16.self)
-        guard initiatorRandom.count == 32, try fields.uint(3) == 0 else { throw PASEError.invalidMessage }
+        guard initiatorRandom.count == 32, initiatorSessionID != 0, try fields.uint(3) == 0 else { throw PASEError.invalidMessage }
         let hasParameters = try fields.bool(4)
         let peerParameters = SessionParameters(tlv: fields[5])
 
@@ -75,9 +75,10 @@ public enum PASE {
         let response: [TLVElement] = [
             .field(1, .bytes(initiatorRandom)), .field(2, .bytes(MatterCrypto.random(32))),
             .field(3, .unsigned(UInt64(localSessionID))),
-            .field(4, .structure(hasParameters ? [] : [
-                .field(1, .unsigned(UInt64(window.iterations))), .field(2, .bytes(window.salt)),
-            ])),
+        ] + (hasParameters ? [] : [
+            // Left out when the initiator already has them (from the onboarding payload), as connectedhomeip does.
+            .field(4, .structure([.field(1, .unsigned(UInt64(window.iterations))), .field(2, .bytes(window.salt))])),
+        ]) + [
             .field(5, layer.parameters.tlv),
         ]
         let responsePayload = TLVEncoder.encode(.structure(response))
@@ -155,6 +156,7 @@ public enum PASE {
         try expect(response, .pbkdfParamResponse)
         let fields = try TLVStruct(decoding: response.payload)
         let peerSessionID = try fields.uint(3, as: UInt16.self)
+        guard peerSessionID != 0 else { throw PASEError.invalidMessage }
         let parameters = try fields.structure(4)
         let iterations = try parameters.uint(1)
         let salt = try parameters.bytes(2)
@@ -175,7 +177,9 @@ public enum PASE {
         try await exchange.send(.pake3, TLVEncoder.encode(.structure([.field(1, .bytes(keys.confirmationA))])))
 
         let finished = try await exchange.receive()
-        guard finished.payloadHeader.opcode == SecureChannelOpcode.statusReport.rawValue else { throw PASEError.invalidMessage }
+        guard finished.payloadHeader.protocolID == .secureChannel,
+              finished.payloadHeader.opcode == SecureChannelOpcode.statusReport.rawValue
+        else { throw PASEError.invalidMessage }
         let status = try StatusReport(decoding: finished.payload)
         guard status == .sessionEstablished else { throw PASEError.rejected(status) }
 
@@ -186,7 +190,15 @@ public enum PASE {
 
 /// The Secure Channel protocol's unsolicited messages: PASE and CASE establishment, and CloseSession.
 public struct SecureChannelServer: ProtocolHandler {
+    /// One PASE establishment at a time (Core §5.5): others are told the node is busy.
+    actor PASEGate {
+        private var busy = false
+        func enter() -> Bool { defer { busy = true }; return !busy }
+        func leave() { busy = false }
+    }
+
     let pase: PASE.ResponderContext
+    let paseGate = PASEGate()
     let caseResponder: (any CASEResponding)?
     let logger: Logger
 
@@ -201,7 +213,15 @@ public struct SecureChannelServer: ProtocolHandler {
         let session = exchange.initialSession
         switch SecureChannelOpcode(rawValue: message.payloadHeader.opcode) {
         case .pbkdfParamRequest where session.kind == .unsecured:
+            guard await paseGate.enter() else {
+                // Busy: the minimum wait in milliseconds before retrying (Core §4.11.1.3).
+                var wait: [UInt8] = []
+                wait.appendLittleEndian(UInt16(1000))
+                try? await exchange.sendStatus(.secureChannel(.busy, .busy, data: wait))
+                return
+            }
             await PASE.respond(on: exchange, request: message, context: pase, logger: logger)
+            await paseGate.leave()
         case .sigma1 where session.kind == .unsecured:
             await caseResponder?.respond(on: exchange, sigma1: message)
         case .statusReport where session.isSecure:

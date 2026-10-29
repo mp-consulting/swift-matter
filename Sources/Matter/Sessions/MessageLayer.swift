@@ -221,7 +221,7 @@ public actor MessageLayer {
         // One reliable message in flight per exchange (Core §4.12.5.1).
         if reliable, let pending = state.retransmission {
             await waitForAck(of: key, counter: pending.counter)
-            guard let refreshed = exchanges[key] else { throw ExchangeError.notAcknowledged }
+            guard let refreshed = exchanges[key], !refreshed.closed else { throw ExchangeError.closed }
             state = refreshed
         }
         let ack = state.pendingAck
@@ -354,6 +354,8 @@ public actor MessageLayer {
             let isDuplicate: Bool
             if header.isUnsecured {
                 message = try Message(header: header, plaintext: Array(bytes[headerLength...]))
+                // Only session establishment runs unencrypted (Core §4.13.2.1).
+                guard message.payloadHeader.protocolID == .secureChannel else { return }
                 // A message from an initiator carries its ephemeral id as source; a response is addressed to ours.
                 let peerNodeID: UInt64
                 if let source = header.source {
@@ -490,9 +492,10 @@ public actor Exchange {
 
     /// The next message, waiting at most `timeout`; by default the peer's retransmission schedule plus time to work.
     public func receive(timeout: Duration? = nil) async throws -> Message {
+        // Work out the timeout first: a message delivered during this await lands in the queue checked below.
+        let timeout = if let timeout { timeout } else { await layer.responseTimeout(for: key) }
         if !queue.isEmpty { return queue.removeFirst() }
         if let failure { throw failure }
-        let timeout = if let timeout { timeout } else { await layer.responseTimeout(for: key) }
         waitID &+= 1
         let id = waitID
         return try await withCheckedThrowingContinuation { continuation in

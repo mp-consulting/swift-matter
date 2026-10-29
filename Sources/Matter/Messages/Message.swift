@@ -21,6 +21,7 @@ public enum MessageError: Error, Equatable, Sendable {
     case authenticationFailed
     case unknownSession(UInt16)
     case privacyUnsupported
+    case unknownStatus(UInt16)
 }
 
 /// The unencrypted message header (Core §4.4.1); it is the additional data of the AEAD.
