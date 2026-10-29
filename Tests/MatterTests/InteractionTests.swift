@@ -13,7 +13,7 @@ struct IMFixture {
 
     init() async throws {
         pair = try await Pair()
-        server = InteractionServer(dataModel: model, accessControl: AccessControlList(), payloadLimit: 400)
+        server = InteractionServer(dataModel: model, accessControl: await AccessControlEntries(storage: MemoryStorage()), payloadLimit: 400)
         await server.setTimeScale(0.01)
         try await server.serve(on: pair.device)
         client = InteractionClient(layer: pair.controller)
@@ -182,7 +182,8 @@ struct AccessControlTests {
     }
 
     @Test func grantsByNodeCATAndTarget() async {
-        let acl = AccessControlList(entries: [
+        let acl = await AccessControlEntries(storage: MemoryStorage())
+        await acl.replace(fabric: 1, with: [
             AccessControlEntry(fabricIndex: 1, privilege: .administer, authMode: .case, subjects: [0x1122]),
             AccessControlEntry(fabricIndex: 1, privilege: .operate, authMode: .case, subjects: [0xFFFF_FFFD_0001_0002],
                                targets: [.init(endpoint: 1)]),
