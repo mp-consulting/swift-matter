@@ -200,6 +200,44 @@ public enum AccessControlCluster {
         public static let system: UInt64 = 0
         public static let groupcast: UInt64 = 1
     }
+    /// The field tags of AccessControlTargetStruct.
+    public enum AccessControlTargetStruct {
+        public static let cluster: UInt8 = 0
+        public static let endpoint: UInt8 = 1
+        public static let deviceType: UInt8 = 2
+    }
+    /// The field tags of AccessControlEntryStruct.
+    public enum AccessControlEntryStruct {
+        public static let privilege: UInt8 = 1
+        public static let authMode: UInt8 = 2
+        public static let subjects: UInt8 = 3
+        public static let targets: UInt8 = 4
+        public static let auxiliaryType: UInt8 = 5
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of AccessControlExtensionStruct.
+    public enum AccessControlExtensionStruct {
+        public static let data: UInt8 = 1
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of AccessRestrictionStruct.
+    public enum AccessRestrictionStruct {
+        public static let type: UInt8 = 0
+        public static let id: UInt8 = 1
+    }
+    /// The field tags of AccessRestrictionEntryStruct.
+    public enum AccessRestrictionEntryStruct {
+        public static let endpoint: UInt8 = 0
+        public static let cluster: UInt8 = 1
+        public static let restrictions: UInt8 = 2
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of CommissioningAccessRestrictionEntryStruct.
+    public enum CommissioningAccessRestrictionEntryStruct {
+        public static let endpoint: UInt8 = 0
+        public static let cluster: UInt8 = 1
+        public static let restrictions: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x001F, name: "AccessControl", revision: 3,
         attributes: [
@@ -302,6 +340,22 @@ public enum ActionsCluster {
         public static let other: UInt64 = 0
         public static let room: UInt64 = 1
         public static let zone: UInt64 = 2
+    }
+    /// The field tags of ActionStruct.
+    public enum ActionStruct {
+        public static let actionId: UInt8 = 0
+        public static let name: UInt8 = 1
+        public static let type: UInt8 = 2
+        public static let endpointListId: UInt8 = 3
+        public static let supportedCommands: UInt8 = 4
+        public static let state: UInt8 = 5
+    }
+    /// The field tags of EndpointListStruct.
+    public enum EndpointListStruct {
+        public static let endpointListId: UInt8 = 0
+        public static let name: UInt8 = 1
+        public static let type: UInt8 = 2
+        public static let endpoints: UInt8 = 3
     }
     public static let definition = ClusterDefinition(
         id: 0x0025, name: "Actions", revision: 1,
@@ -459,6 +513,30 @@ public enum AmbientContextSensingCluster {
         public static let soundIdentification = Feature(rawValue: 1 << 3)
         public static let predictedActivity = Feature(rawValue: 1 << 4)
     }
+    /// The field tags of HoldTimeLimitsStruct.
+    public enum HoldTimeLimitsStruct {
+        public static let holdTimeMin: UInt8 = 0
+        public static let holdTimeMax: UInt8 = 1
+        public static let holdTimeDefault: UInt8 = 2
+    }
+    /// The field tags of AmbientContextTypeStruct.
+    public enum AmbientContextTypeStruct {
+        public static let ambientContextSensed: UInt8 = 0
+    }
+    /// The field tags of ObjectCountConfigStruct.
+    public enum ObjectCountConfigStruct {
+        public static let countingObject: UInt8 = 0
+        public static let objectCountThreshold: UInt8 = 1
+    }
+    /// The field tags of PredictedActivityStruct.
+    public enum PredictedActivityStruct {
+        public static let startTimestamp: UInt8 = 0
+        public static let endTimestamp: UInt8 = 1
+        public static let ambientContextType: UInt8 = 2
+        public static let crowdDetected: UInt8 = 3
+        public static let crowdCount: UInt8 = 4
+        public static let confidence: UInt8 = 5
+    }
     public static let definition = ClusterDefinition(
         id: 0x0431, name: "AmbientContextSensing", revision: 1,
         attributes: [
@@ -503,6 +581,11 @@ public enum ApplicationBasicCluster {
         public static let activeVisibleFocus: UInt64 = 1
         public static let activeHidden: UInt64 = 2
         public static let activeVisibleNotFocus: UInt64 = 3
+    }
+    /// The field tags of ApplicationStruct.
+    public enum ApplicationStruct {
+        public static let catalogVendorId: UInt8 = 0
+        public static let applicationId: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x050D, name: "ApplicationBasic", revision: 1,
@@ -550,6 +633,16 @@ public enum ApplicationLauncherCluster {
         public static let downloading: UInt64 = 4
         public static let installing: UInt64 = 5
     }
+    /// The field tags of ApplicationStruct.
+    public enum ApplicationStruct {
+        public static let catalogVendorId: UInt8 = 0
+        public static let applicationId: UInt8 = 1
+    }
+    /// The field tags of ApplicationEPStruct.
+    public enum ApplicationEPStruct {
+        public static let application: UInt8 = 0
+        public static let endpoint: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x050C, name: "ApplicationLauncher", revision: 2,
         attributes: [
@@ -590,6 +683,12 @@ public enum AudioOutputCluster {
         public static let headphone: UInt64 = 3
         public static let `internal`: UInt64 = 4
         public static let other: UInt64 = 5
+    }
+    /// The field tags of OutputInfoStruct.
+    public enum OutputInfoStruct {
+        public static let index: UInt8 = 0
+        public static let outputType: UInt8 = 1
+        public static let name: UInt8 = 2
     }
     public static let definition = ClusterDefinition(
         id: 0x050B, name: "AudioOutput", revision: 1,
@@ -673,6 +772,20 @@ public enum BasicInformationCluster {
         public static let silver: UInt64 = 19
         public static let gold: UInt64 = 20
     }
+    /// The field tags of ProductAppearanceStruct.
+    public enum ProductAppearanceStruct {
+        public static let finish: UInt8 = 0
+        public static let primaryColor: UInt8 = 1
+    }
+    /// The field tags of CapabilityMinimaStruct.
+    public enum CapabilityMinimaStruct {
+        public static let caseSessionsPerFabric: UInt8 = 0
+        public static let subscriptionsPerFabric: UInt8 = 1
+        public static let simultaneousInvocationsSupported: UInt8 = 2
+        public static let simultaneousWritesSupported: UInt8 = 3
+        public static let readPathsSupported: UInt8 = 4
+        public static let subscribePathsSupported: UInt8 = 5
+    }
     public static let definition = ClusterDefinition(
         id: 0x0028, name: "BasicInformation", revision: 6,
         attributes: [
@@ -718,6 +831,14 @@ public enum BindingCluster {
     public static let revision: UInt16 = 1
     public enum Attribute {
         public static let binding: AttributeID = 0x0000
+    }
+    /// The field tags of TargetStruct.
+    public enum TargetStruct {
+        public static let node: UInt8 = 1
+        public static let group: UInt8 = 2
+        public static let endpoint: UInt8 = 3
+        public static let cluster: UInt8 = 4
+        public static let fabricIndex: UInt8 = 254
     }
     public static let definition = ClusterDefinition(
         id: 0x001E, name: "Binding", revision: 1,
@@ -937,6 +1058,23 @@ public enum CameraAvSettingsUserLevelManagementCluster {
         public static let idle: UInt64 = 0
         public static let moving: UInt64 = 1
     }
+    /// The field tags of DPTZStruct.
+    public enum DPTZStruct {
+        public static let videoStreamId: UInt8 = 0
+        public static let viewport: UInt8 = 1
+    }
+    /// The field tags of MPTZStruct.
+    public enum MPTZStruct {
+        public static let pan: UInt8 = 0
+        public static let tilt: UInt8 = 1
+        public static let zoom: UInt8 = 2
+    }
+    /// The field tags of MPTZPresetStruct.
+    public enum MPTZPresetStruct {
+        public static let presetId: UInt8 = 0
+        public static let name: UInt8 = 1
+        public static let settings: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0552, name: "CameraAvSettingsUserLevelManagement", revision: 1,
         attributes: [
@@ -1067,6 +1205,87 @@ public enum CameraAvStreamManagementCluster {
         public static let off: UInt64 = 0
         public static let on: UInt64 = 1
         public static let auto: UInt64 = 2
+    }
+    /// The field tags of VideoSensorParamsStruct.
+    public enum VideoSensorParamsStruct {
+        public static let sensorWidth: UInt8 = 0
+        public static let sensorHeight: UInt8 = 1
+        public static let maxFps: UInt8 = 2
+        public static let maxHdrfps: UInt8 = 3
+    }
+    /// The field tags of VideoResolutionStruct.
+    public enum VideoResolutionStruct {
+        public static let width: UInt8 = 0
+        public static let height: UInt8 = 1
+    }
+    /// The field tags of RateDistortionTradeOffPointsStruct.
+    public enum RateDistortionTradeOffPointsStruct {
+        public static let codec: UInt8 = 0
+        public static let resolution: UInt8 = 1
+        public static let minBitRate: UInt8 = 2
+    }
+    /// The field tags of SnapshotCapabilitiesStruct.
+    public enum SnapshotCapabilitiesStruct {
+        public static let resolution: UInt8 = 0
+        public static let maxFrameRate: UInt8 = 1
+        public static let imageCodec: UInt8 = 2
+        public static let requiresEncodedPixels: UInt8 = 3
+        public static let requiresHardwareEncoder: UInt8 = 4
+    }
+    /// The field tags of AudioCapabilitiesStruct.
+    public enum AudioCapabilitiesStruct {
+        public static let maxNumberOfChannels: UInt8 = 0
+        public static let supportedCodecs: UInt8 = 1
+        public static let supportedSampleRates: UInt8 = 2
+        public static let supportedBitDepths: UInt8 = 3
+    }
+    /// The field tags of VideoStreamStruct.
+    public enum VideoStreamStruct {
+        public static let videoStreamId: UInt8 = 0
+        public static let streamUsage: UInt8 = 1
+        public static let videoCodec: UInt8 = 2
+        public static let minFrameRate: UInt8 = 3
+        public static let maxFrameRate: UInt8 = 4
+        public static let minResolution: UInt8 = 5
+        public static let maxResolution: UInt8 = 6
+        public static let minBitRate: UInt8 = 7
+        public static let maxBitRate: UInt8 = 8
+        public static let keyFrameInterval: UInt8 = 9
+        public static let watermarkEnabled: UInt8 = 10
+        public static let osdEnabled: UInt8 = 11
+        public static let referenceCount: UInt8 = 12
+    }
+    /// The field tags of AudioStreamStruct.
+    public enum AudioStreamStruct {
+        public static let audioStreamId: UInt8 = 0
+        public static let streamUsage: UInt8 = 1
+        public static let audioCodec: UInt8 = 2
+        public static let channelCount: UInt8 = 3
+        public static let sampleRate: UInt8 = 4
+        public static let bitRate: UInt8 = 5
+        public static let bitDepth: UInt8 = 6
+        public static let referenceCount: UInt8 = 7
+    }
+    /// The field tags of SnapshotStreamStruct.
+    public enum SnapshotStreamStruct {
+        public static let snapshotStreamId: UInt8 = 0
+        public static let imageCodec: UInt8 = 1
+        public static let frameRate: UInt8 = 2
+        public static let minResolution: UInt8 = 3
+        public static let maxResolution: UInt8 = 4
+        public static let quality: UInt8 = 5
+        public static let referenceCount: UInt8 = 6
+        public static let encodedPixels: UInt8 = 7
+        public static let hardwareEncoder: UInt8 = 8
+        public static let watermarkEnabled: UInt8 = 9
+        public static let osdEnabled: UInt8 = 10
+    }
+    /// The field tags of AVMetadataStruct.
+    public enum AVMetadataStruct {
+        public static let utcTime: UInt8 = 1
+        public static let motionZonesActive: UInt8 = 2
+        public static let blackAndWhiteActive: UInt8 = 3
+        public static let userDefined: UInt8 = 4
     }
     public static let definition = ClusterDefinition(
         id: 0x0551, name: "CameraAvStreamManagement", revision: 2,
@@ -1202,6 +1421,71 @@ public enum ChannelCluster {
         public static let terrestrial: UInt64 = 2
         public static let ott: UInt64 = 3
     }
+    /// The field tags of ChannelInfoStruct.
+    public enum ChannelInfoStruct {
+        public static let majorNumber: UInt8 = 0
+        public static let minorNumber: UInt8 = 1
+        public static let name: UInt8 = 2
+        public static let callSign: UInt8 = 3
+        public static let affiliateCallSign: UInt8 = 4
+        public static let identifier: UInt8 = 5
+        public static let type: UInt8 = 6
+    }
+    /// The field tags of LineupInfoStruct.
+    public enum LineupInfoStruct {
+        public static let operatorName: UInt8 = 0
+        public static let lineupName: UInt8 = 1
+        public static let postalCode: UInt8 = 2
+        public static let lineupInfoType: UInt8 = 3
+    }
+    /// The field tags of ProgramStruct.
+    public enum ProgramStruct {
+        public static let identifier: UInt8 = 0
+        public static let channel: UInt8 = 1
+        public static let startTime: UInt8 = 2
+        public static let endTime: UInt8 = 3
+        public static let title: UInt8 = 4
+        public static let subtitle: UInt8 = 5
+        public static let description: UInt8 = 6
+        public static let audioLanguages: UInt8 = 7
+        public static let ratings: UInt8 = 8
+        public static let thumbnailUrl: UInt8 = 9
+        public static let posterArtUrl: UInt8 = 10
+        public static let dvbiUrl: UInt8 = 11
+        public static let releaseDate: UInt8 = 12
+        public static let parentalGuidanceText: UInt8 = 13
+        public static let recordingFlag: UInt8 = 14
+        public static let seriesInfo: UInt8 = 15
+        public static let categoryList: UInt8 = 16
+        public static let castList: UInt8 = 17
+        public static let externalIdList: UInt8 = 18
+    }
+    /// The field tags of ProgramCategoryStruct.
+    public enum ProgramCategoryStruct {
+        public static let category: UInt8 = 0
+        public static let subCategory: UInt8 = 1
+    }
+    /// The field tags of SeriesInfoStruct.
+    public enum SeriesInfoStruct {
+        public static let season: UInt8 = 0
+        public static let episode: UInt8 = 1
+    }
+    /// The field tags of ProgramCastStruct.
+    public enum ProgramCastStruct {
+        public static let name: UInt8 = 0
+        public static let role: UInt8 = 1
+    }
+    /// The field tags of PageTokenStruct.
+    public enum PageTokenStruct {
+        public static let limit: UInt8 = 0
+        public static let after: UInt8 = 1
+        public static let before: UInt8 = 2
+    }
+    /// The field tags of ChannelPagingStruct.
+    public enum ChannelPagingStruct {
+        public static let previousToken: UInt8 = 0
+        public static let nextToken: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0504, name: "Channel", revision: 2,
         attributes: [
@@ -1236,6 +1520,11 @@ public enum ChimeCluster {
     }
     public enum Event {
         public static let chimeStartedPlaying: EventID = 0x00
+    }
+    /// The field tags of ChimeSoundStruct.
+    public enum ChimeSoundStruct {
+        public static let chimeId: UInt8 = 0
+        public static let name: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x0556, name: "Chime", revision: 2,
@@ -1320,6 +1609,19 @@ public enum ClosureControlCluster {
         public static let temperatureLimited: UInt64 = 2
         public static let maintenanceRequired: UInt64 = 3
         public static let internalInterference: UInt64 = 4
+    }
+    /// The field tags of OverallCurrentStateStruct.
+    public enum OverallCurrentStateStruct {
+        public static let position: UInt8 = 0
+        public static let latch: UInt8 = 1
+        public static let speed: UInt8 = 2
+        public static let secureState: UInt8 = 3
+    }
+    /// The field tags of OverallTargetStateStruct.
+    public enum OverallTargetStateStruct {
+        public static let position: UInt8 = 0
+        public static let latch: UInt8 = 1
+        public static let speed: UInt8 = 2
     }
     public static let definition = ClusterDefinition(
         id: 0x0104, name: "ClosureControl", revision: 1,
@@ -1433,6 +1735,22 @@ public enum ClosureDimensionCluster {
     public enum StepDirectionEnum {
         public static let decrease: UInt64 = 0
         public static let increase: UInt64 = 1
+    }
+    /// The field tags of RangePercent100thsStruct.
+    public enum RangePercent100thsStruct {
+        public static let min: UInt8 = 0
+        public static let max: UInt8 = 1
+    }
+    /// The field tags of UnitRangeStruct.
+    public enum UnitRangeStruct {
+        public static let min: UInt8 = 0
+        public static let max: UInt8 = 1
+    }
+    /// The field tags of DimensionStateStruct.
+    public enum DimensionStateStruct {
+        public static let position: UInt8 = 0
+        public static let latch: UInt8 = 1
+        public static let speed: UInt8 = 2
     }
     public static let definition = ClusterDefinition(
         id: 0x0105, name: "ClosureDimension", revision: 1,
@@ -1711,6 +2029,11 @@ public enum CommodityMeteringCluster {
         public static let tariffUnit: AttributeID = 0x0002
         public static let maximumMeteredQuantities: AttributeID = 0x0003
     }
+    /// The field tags of MeteredQuantityStruct.
+    public enum MeteredQuantityStruct {
+        public static let tariffComponentIds: UInt8 = 0
+        public static let quantity: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0B07, name: "CommodityMetering", revision: 1,
         attributes: [
@@ -1749,6 +2072,22 @@ public enum CommodityPriceCluster {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let forecasting = Feature(rawValue: 1 << 0)
+    }
+    /// The field tags of CommodityPriceComponentStruct.
+    public enum CommodityPriceComponentStruct {
+        public static let price: UInt8 = 0
+        public static let source: UInt8 = 1
+        public static let description: UInt8 = 2
+        public static let tariffComponentId: UInt8 = 3
+    }
+    /// The field tags of CommodityPriceStruct.
+    public enum CommodityPriceStruct {
+        public static let periodStart: UInt8 = 0
+        public static let periodEnd: UInt8 = 1
+        public static let price: UInt8 = 2
+        public static let priceLevel: UInt8 = 3
+        public static let description: UInt8 = 4
+        public static let components: UInt8 = 5
     }
     public static let definition = ClusterDefinition(
         id: 0x0095, name: "CommodityPrice", revision: 4,
@@ -1837,6 +2176,76 @@ public enum CommodityTariffCluster {
         public static let noBlock: UInt64 = 0
         public static let combined: UInt64 = 1
         public static let individual: UInt64 = 2
+    }
+    /// The field tags of AuxiliaryLoadSwitchSettingsStruct.
+    public enum AuxiliaryLoadSwitchSettingsStruct {
+        public static let number: UInt8 = 0
+        public static let requiredState: UInt8 = 1
+    }
+    /// The field tags of AuxiliaryLoadSwitchesSettingsStruct.
+    public enum AuxiliaryLoadSwitchesSettingsStruct {
+        public static let switchStates: UInt8 = 0
+    }
+    /// The field tags of CalendarPeriodStruct.
+    public enum CalendarPeriodStruct {
+        public static let startDate: UInt8 = 0
+        public static let dayPatternIds: UInt8 = 1
+    }
+    /// The field tags of DayEntryStruct.
+    public enum DayEntryStruct {
+        public static let dayEntryId: UInt8 = 0
+        public static let startTime: UInt8 = 1
+        public static let duration: UInt8 = 2
+        public static let randomizationOffset: UInt8 = 3
+        public static let randomizationType: UInt8 = 4
+    }
+    /// The field tags of DayStruct.
+    public enum DayStruct {
+        public static let date: UInt8 = 0
+        public static let dayType: UInt8 = 1
+        public static let dayEntryIds: UInt8 = 2
+    }
+    /// The field tags of DayPatternStruct.
+    public enum DayPatternStruct {
+        public static let dayPatternId: UInt8 = 0
+        public static let daysOfWeek: UInt8 = 1
+        public static let dayEntryIds: UInt8 = 2
+    }
+    /// The field tags of PeakPeriodStruct.
+    public enum PeakPeriodStruct {
+        public static let severity: UInt8 = 0
+        public static let peakPeriod: UInt8 = 1
+    }
+    /// The field tags of TariffInformationStruct.
+    public enum TariffInformationStruct {
+        public static let tariffLabel: UInt8 = 0
+        public static let providerName: UInt8 = 1
+        public static let currency: UInt8 = 2
+        public static let blockMode: UInt8 = 3
+    }
+    /// The field tags of TariffPriceStruct.
+    public enum TariffPriceStruct {
+        public static let priceType: UInt8 = 0
+        public static let price: UInt8 = 1
+        public static let priceLevel: UInt8 = 2
+    }
+    /// The field tags of TariffComponentStruct.
+    public enum TariffComponentStruct {
+        public static let tariffComponentId: UInt8 = 0
+        public static let price: UInt8 = 1
+        public static let friendlyCredit: UInt8 = 2
+        public static let auxiliaryLoad: UInt8 = 3
+        public static let peakPeriod: UInt8 = 4
+        public static let powerThreshold: UInt8 = 5
+        public static let threshold: UInt8 = 6
+        public static let label: UInt8 = 7
+        public static let predicted: UInt8 = 8
+    }
+    /// The field tags of TariffPeriodStruct.
+    public enum TariffPeriodStruct {
+        public static let label: UInt8 = 0
+        public static let dayEntryIds: UInt8 = 1
+        public static let tariffComponentIds: UInt8 = 2
     }
     public static let definition = ClusterDefinition(
         id: 0x0700, name: "CommodityTariff", revision: 1,
@@ -1958,6 +2367,36 @@ public enum ContentControlCluster {
         public static let timeWindowAlreadyExist: UInt64 = 10
         public static let timeWindowNotExist: UInt64 = 11
     }
+    /// The field tags of RatingNameStruct.
+    public enum RatingNameStruct {
+        public static let ratingName: UInt8 = 0
+        public static let ratingNameDesc: UInt8 = 1
+    }
+    /// The field tags of BlockChannelStruct.
+    public enum BlockChannelStruct {
+        public static let blockChannelIndex: UInt8 = 0
+        public static let majorNumber: UInt8 = 1
+        public static let minorNumber: UInt8 = 2
+        public static let identifier: UInt8 = 3
+    }
+    /// The field tags of AppInfoStruct.
+    public enum AppInfoStruct {
+        public static let catalogVendorId: UInt8 = 0
+        public static let applicationId: UInt8 = 1
+    }
+    /// The field tags of TimeWindowStruct.
+    public enum TimeWindowStruct {
+        public static let timeWindowIndex: UInt8 = 0
+        public static let dayOfWeek: UInt8 = 1
+        public static let timePeriod: UInt8 = 2
+    }
+    /// The field tags of TimePeriodStruct.
+    public enum TimePeriodStruct {
+        public static let startHour: UInt8 = 0
+        public static let startMinute: UInt8 = 1
+        public static let endHour: UInt8 = 2
+        public static let endMinute: UInt8 = 3
+    }
     public static let definition = ClusterDefinition(
         id: 0x050F, name: "ContentControl", revision: 1,
         attributes: [
@@ -2050,6 +2489,54 @@ public enum ContentLauncherCluster {
         public static let pixels: UInt64 = 0
         public static let percentage: UInt64 = 1
     }
+    /// The field tags of AdditionalInfoStruct.
+    public enum AdditionalInfoStruct {
+        public static let name: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ParameterStruct.
+    public enum ParameterStruct {
+        public static let type: UInt8 = 0
+        public static let value: UInt8 = 1
+        public static let externalIdList: UInt8 = 2
+    }
+    /// The field tags of ContentSearchStruct.
+    public enum ContentSearchStruct {
+        public static let parameterList: UInt8 = 0
+    }
+    /// The field tags of DimensionStruct.
+    public enum DimensionStruct {
+        public static let width: UInt8 = 0
+        public static let height: UInt8 = 1
+        public static let metric: UInt8 = 2
+    }
+    /// The field tags of StyleInformationStruct.
+    public enum StyleInformationStruct {
+        public static let imageUrl: UInt8 = 0
+        public static let color: UInt8 = 1
+        public static let size: UInt8 = 2
+    }
+    /// The field tags of BrandingInformationStruct.
+    public enum BrandingInformationStruct {
+        public static let providerName: UInt8 = 0
+        public static let background: UInt8 = 1
+        public static let logo: UInt8 = 2
+        public static let progressBar: UInt8 = 3
+        public static let splash: UInt8 = 4
+        public static let watermark: UInt8 = 5
+    }
+    /// The field tags of PlaybackPreferencesStruct.
+    public enum PlaybackPreferencesStruct {
+        public static let playbackPosition: UInt8 = 0
+        public static let textTrack: UInt8 = 1
+        public static let audioTracks: UInt8 = 2
+    }
+    /// The field tags of TrackPreferenceStruct.
+    public enum TrackPreferenceStruct {
+        public static let languageCode: UInt8 = 0
+        public static let characteristics: UInt8 = 1
+        public static let audioOutputIndex: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x050A, name: "ContentLauncher", revision: 2,
         attributes: [
@@ -2081,6 +2568,11 @@ public enum DescriptorCluster {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let tagList = Feature(rawValue: 1 << 0)
+    }
+    /// The field tags of DeviceTypeStruct.
+    public enum DeviceTypeStruct {
+        public static let deviceType: UInt8 = 0
+        public static let revision: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x001D, name: "Descriptor", revision: 3,
@@ -2196,6 +2688,72 @@ public enum DeviceEnergyManagementCluster {
         public static let noAdjustment: UInt64 = 0
         public static let localOptimizationAdjustment: UInt64 = 1
         public static let gridOptimizationAdjustment: UInt64 = 2
+    }
+    /// The field tags of CostStruct.
+    public enum CostStruct {
+        public static let costType: UInt8 = 0
+        public static let value: UInt8 = 1
+        public static let decimalPoints: UInt8 = 2
+        public static let currency: UInt8 = 3
+    }
+    /// The field tags of PowerAdjustStruct.
+    public enum PowerAdjustStruct {
+        public static let minPower: UInt8 = 0
+        public static let maxPower: UInt8 = 1
+        public static let minDuration: UInt8 = 2
+        public static let maxDuration: UInt8 = 3
+    }
+    /// The field tags of PowerAdjustCapabilityStruct.
+    public enum PowerAdjustCapabilityStruct {
+        public static let powerAdjustCapability: UInt8 = 0
+        public static let cause: UInt8 = 1
+    }
+    /// The field tags of ForecastStruct.
+    public enum ForecastStruct {
+        public static let forecastId: UInt8 = 0
+        public static let activeSlotNumber: UInt8 = 1
+        public static let startTime: UInt8 = 2
+        public static let endTime: UInt8 = 3
+        public static let earliestStartTime: UInt8 = 4
+        public static let latestEndTime: UInt8 = 5
+        public static let isPausable: UInt8 = 6
+        public static let slots: UInt8 = 7
+        public static let forecastUpdateReason: UInt8 = 8
+    }
+    /// The field tags of SlotStruct.
+    public enum SlotStruct {
+        public static let minDuration: UInt8 = 0
+        public static let maxDuration: UInt8 = 1
+        public static let defaultDuration: UInt8 = 2
+        public static let elapsedSlotTime: UInt8 = 3
+        public static let remainingSlotTime: UInt8 = 4
+        public static let slotIsPausable: UInt8 = 5
+        public static let minPauseDuration: UInt8 = 6
+        public static let maxPauseDuration: UInt8 = 7
+        public static let manufacturerEsaState: UInt8 = 8
+        public static let nominalPower: UInt8 = 9
+        public static let minPower: UInt8 = 10
+        public static let maxPower: UInt8 = 11
+        public static let nominalEnergy: UInt8 = 12
+        public static let costs: UInt8 = 13
+        public static let minPowerAdjustment: UInt8 = 14
+        public static let maxPowerAdjustment: UInt8 = 15
+        public static let minDurationAdjustment: UInt8 = 16
+        public static let maxDurationAdjustment: UInt8 = 17
+    }
+    /// The field tags of SlotAdjustmentStruct.
+    public enum SlotAdjustmentStruct {
+        public static let slotIndex: UInt8 = 0
+        public static let nominalPower: UInt8 = 1
+        public static let duration: UInt8 = 2
+    }
+    /// The field tags of ConstraintsStruct.
+    public enum ConstraintsStruct {
+        public static let startTime: UInt8 = 0
+        public static let duration: UInt8 = 1
+        public static let nominalPower: UInt8 = 2
+        public static let maximumEnergy: UInt8 = 3
+        public static let loadControl: UInt8 = 4
     }
     public static let definition = ClusterDefinition(
         id: 0x0098, name: "DeviceEnergyManagement", revision: 4,
@@ -2622,6 +3180,11 @@ public enum DoorLockCluster {
         public static let duplicate: UInt64 = 2
         public static let occupied: UInt64 = 3
     }
+    /// The field tags of CredentialStruct.
+    public enum CredentialStruct {
+        public static let credentialType: UInt8 = 0
+        public static let credentialIndex: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0101, name: "DoorLock", revision: 10,
         attributes: [
@@ -2714,6 +3277,29 @@ public enum EcosystemInformationCluster {
         public static let deviceDirectory: AttributeID = 0x0000
         public static let locationDirectory: AttributeID = 0x0001
     }
+    /// The field tags of DeviceTypeStruct.
+    public enum DeviceTypeStruct {
+        public static let deviceType: UInt8 = 0
+        public static let revision: UInt8 = 1
+    }
+    /// The field tags of EcosystemDeviceStruct.
+    public enum EcosystemDeviceStruct {
+        public static let deviceName: UInt8 = 0
+        public static let deviceNameLastEdit: UInt8 = 1
+        public static let bridgedEndpoint: UInt8 = 2
+        public static let originalEndpoint: UInt8 = 3
+        public static let deviceTypes: UInt8 = 4
+        public static let uniqueLocationIds: UInt8 = 5
+        public static let uniqueLocationIdsLastEdit: UInt8 = 6
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of EcosystemLocationStruct.
+    public enum EcosystemLocationStruct {
+        public static let uniqueLocationId: UInt8 = 0
+        public static let locationDescriptor: UInt8 = 1
+        public static let locationDescriptorLastEdit: UInt8 = 2
+        public static let fabricIndex: UInt8 = 254
+    }
     public static let definition = ClusterDefinition(
         id: 0x0750, name: "EcosystemInformation", revision: 1,
         attributes: [
@@ -2772,6 +3358,23 @@ public enum ElectricalEnergyMeasurementCluster {
         public static let reactiveEnergy: UInt64 = 15
         public static let apparentEnergy: UInt64 = 16
     }
+    /// The field tags of EnergyMeasurementStruct.
+    public enum EnergyMeasurementStruct {
+        public static let energy: UInt8 = 0
+        public static let startTimestamp: UInt8 = 1
+        public static let endTimestamp: UInt8 = 2
+        public static let startSystime: UInt8 = 3
+        public static let endSystime: UInt8 = 4
+        public static let apparentEnergy: UInt8 = 5
+        public static let reactiveEnergy: UInt8 = 6
+    }
+    /// The field tags of CumulativeEnergyResetStruct.
+    public enum CumulativeEnergyResetStruct {
+        public static let importedResetTimestamp: UInt8 = 0
+        public static let exportedResetTimestamp: UInt8 = 1
+        public static let importedResetSystime: UInt8 = 2
+        public static let exportedResetSystime: UInt8 = 3
+    }
     public static let definition = ClusterDefinition(
         id: 0x0091, name: "ElectricalEnergyMeasurement", revision: 2,
         attributes: [
@@ -2812,6 +3415,15 @@ public enum ElectricalGridConditionsCluster {
         public static let low: UInt64 = 0
         public static let medium: UInt64 = 1
         public static let high: UInt64 = 2
+    }
+    /// The field tags of ElectricalGridConditionsStruct.
+    public enum ElectricalGridConditionsStruct {
+        public static let periodStart: UInt8 = 0
+        public static let periodEnd: UInt8 = 1
+        public static let gridCarbonIntensity: UInt8 = 2
+        public static let gridCarbonLevel: UInt8 = 3
+        public static let localCarbonIntensity: UInt8 = 4
+        public static let localCarbonLevel: UInt8 = 5
     }
     public static let definition = ClusterDefinition(
         id: 0x00A0, name: "ElectricalGridConditions", revision: 1,
@@ -2888,6 +3500,25 @@ public enum ElectricalPowerMeasurementCluster {
         public static let electricalEnergy: UInt64 = 14
         public static let reactiveEnergy: UInt64 = 15
         public static let apparentEnergy: UInt64 = 16
+    }
+    /// The field tags of MeasurementRangeStruct.
+    public enum MeasurementRangeStruct {
+        public static let measurementType: UInt8 = 0
+        public static let min: UInt8 = 1
+        public static let max: UInt8 = 2
+        public static let startTimestamp: UInt8 = 3
+        public static let endTimestamp: UInt8 = 4
+        public static let minTimestamp: UInt8 = 5
+        public static let maxTimestamp: UInt8 = 6
+        public static let startSystime: UInt8 = 7
+        public static let endSystime: UInt8 = 8
+        public static let minSystime: UInt8 = 9
+        public static let maxSystime: UInt8 = 10
+    }
+    /// The field tags of HarmonicMeasurementStruct.
+    public enum HarmonicMeasurementStruct {
+        public static let order: UInt8 = 0
+        public static let measurement: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x0090, name: "ElectricalPowerMeasurement", revision: 3,
@@ -3017,6 +3648,17 @@ public enum EnergyEvseCluster {
         public static let evseStopped: UInt64 = 1
         public static let other: UInt64 = 2
     }
+    /// The field tags of ChargingTargetStruct.
+    public enum ChargingTargetStruct {
+        public static let targetTimeMinutesPastMidnight: UInt8 = 0
+        public static let targetSoC: UInt8 = 1
+        public static let addedEnergy: UInt8 = 2
+    }
+    /// The field tags of ChargingTargetScheduleStruct.
+    public enum ChargingTargetScheduleStruct {
+        public static let dayOfWeekForSequence: UInt8 = 0
+        public static let chargingTargets: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0099, name: "EnergyEvse", revision: 4,
         attributes: [
@@ -3132,6 +3774,11 @@ public enum EnergyPreferenceCluster {
         public static let speed: UInt64 = 1
         public static let efficiency: UInt64 = 2
         public static let waterConsumption: UInt64 = 3
+    }
+    /// The field tags of BalanceStruct.
+    public enum BalanceStruct {
+        public static let step: UInt8 = 0
+        public static let label: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x009B, name: "EnergyPreference", revision: 1,
@@ -3400,6 +4047,11 @@ public enum GeneralCommissioningCluster {
         public static let auth: UInt64 = 1
         public static let visibility: UInt64 = 2
     }
+    /// The field tags of BasicCommissioningInfo.
+    public enum BasicCommissioningInfo {
+        public static let failSafeExpiryLengthSeconds: UInt8 = 0
+        public static let maxCumulativeFailsafeSeconds: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0030, name: "GeneralCommissioning", revision: 2,
         attributes: [
@@ -3507,6 +4159,25 @@ public enum GeneralDiagnosticsCluster {
         public static let softwareUpdateCompleted: UInt64 = 5
         public static let softwareReset: UInt64 = 6
     }
+    /// The field tags of NetworkInterface.
+    public enum NetworkInterface {
+        public static let name: UInt8 = 0
+        public static let isOperational: UInt8 = 1
+        public static let offPremiseServicesReachableIPv4: UInt8 = 2
+        public static let offPremiseServicesReachableIPv6: UInt8 = 3
+        public static let hardwareAddress: UInt8 = 4
+        public static let iPv4Addresses: UInt8 = 5
+        public static let iPv6Addresses: UInt8 = 6
+        public static let type: UInt8 = 7
+    }
+    /// The field tags of DeviceLoadStruct.
+    public enum DeviceLoadStruct {
+        public static let currentSubscriptions: UInt8 = 0
+        public static let currentSubscriptionsForFabric: UInt8 = 1
+        public static let totalSubscriptionsEstablished: UInt8 = 2
+        public static let totalInteractionModelMessagesSent: UInt8 = 3
+        public static let totalInteractionModelMessagesReceived: UInt8 = 4
+    }
     public static let definition = ClusterDefinition(
         id: 0x0033, name: "GeneralDiagnostics", revision: 3,
         attributes: [
@@ -3568,6 +4239,37 @@ public enum GroupKeyManagementCluster {
     public enum GroupKeyMulticastPolicyEnum {
         public static let perGroupId: UInt64 = 0
         public static let allNodes: UInt64 = 1
+    }
+    /// The field tags of GroupKeyMapStruct.
+    public enum GroupKeyMapStruct {
+        public static let groupId: UInt8 = 1
+        public static let groupKeySetId: UInt8 = 2
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of GroupKeySetStruct.
+    public enum GroupKeySetStruct {
+        public static let groupKeySetId: UInt8 = 0
+        public static let groupKeySecurityPolicy: UInt8 = 1
+        public static let epochKey0: UInt8 = 2
+        public static let epochStartTime0: UInt8 = 3
+        public static let epochKey1: UInt8 = 4
+        public static let epochStartTime1: UInt8 = 5
+        public static let epochKey2: UInt8 = 6
+        public static let epochStartTime2: UInt8 = 7
+        public static let groupKeyMulticastPolicy: UInt8 = 8
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of GroupInfoMapStruct.
+    public enum GroupInfoMapStruct {
+        public static let groupId: UInt8 = 1
+        public static let endpoints: UInt8 = 2
+        public static let groupName: UInt8 = 3
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of GroupcastAdoptionStruct.
+    public enum GroupcastAdoptionStruct {
+        public static let groupcastAdopted: UInt8 = 0
+        public static let fabricIndex: UInt8 = 254
     }
     public static let definition = ClusterDefinition(
         id: 0x003F, name: "GroupKeyManagement", revision: 4,
@@ -3634,6 +4336,15 @@ public enum GroupcastCluster {
         public static let failedAuth: UInt64 = 3
         public static let noAvailableKey: UInt64 = 4
         public static let sendFailure: UInt64 = 5
+    }
+    /// The field tags of MembershipStruct.
+    public enum MembershipStruct {
+        public static let groupId: UInt8 = 0
+        public static let endpoints: UInt8 = 1
+        public static let keySetId: UInt8 = 2
+        public static let hasAuxiliaryAcl: UInt8 = 3
+        public static let mcastAddrPolicy: UInt8 = 4
+        public static let fabricIndex: UInt8 = 254
     }
     public static let definition = ClusterDefinition(
         id: 0x0065, name: "Groupcast", revision: 1,
@@ -3752,6 +4463,14 @@ public enum IcdManagementCluster {
     public enum OperatingModeEnum {
         public static let sit: UInt64 = 0
         public static let lit: UInt64 = 1
+    }
+    /// The field tags of MonitoringRegistrationStruct.
+    public enum MonitoringRegistrationStruct {
+        public static let checkInNodeId: UInt8 = 1
+        public static let monitoredSubject: UInt8 = 2
+        public static let key: UInt8 = 3
+        public static let clientType: UInt8 = 4
+        public static let fabricIndex: UInt8 = 254
     }
     public static let definition = ClusterDefinition(
         id: 0x0046, name: "IcdManagement", revision: 3,
@@ -3973,6 +4692,100 @@ public enum JointFabricDatastoreCluster {
     public enum DatastoreGroupKeyMulticastPolicyEnum {
         public static let perGroupId: UInt64 = 0
         public static let allNodes: UInt64 = 1
+    }
+    /// The field tags of DatastoreStatusEntryStruct.
+    public enum DatastoreStatusEntryStruct {
+        public static let state: UInt8 = 0
+        public static let updateTimestamp: UInt8 = 1
+        public static let failureCode: UInt8 = 2
+    }
+    /// The field tags of DatastoreNodeKeySetEntryStruct.
+    public enum DatastoreNodeKeySetEntryStruct {
+        public static let nodeId: UInt8 = 0
+        public static let groupKeySetId: UInt8 = 1
+        public static let statusEntry: UInt8 = 2
+    }
+    /// The field tags of DatastoreGroupInformationEntryStruct.
+    public enum DatastoreGroupInformationEntryStruct {
+        public static let groupId: UInt8 = 0
+        public static let friendlyName: UInt8 = 1
+        public static let groupKeySetId: UInt8 = 2
+        public static let groupCat: UInt8 = 3
+        public static let groupCatVersion: UInt8 = 4
+        public static let groupPermission: UInt8 = 5
+    }
+    /// The field tags of DatastoreBindingTargetStruct.
+    public enum DatastoreBindingTargetStruct {
+        public static let node: UInt8 = 1
+        public static let group: UInt8 = 2
+        public static let endpoint: UInt8 = 3
+        public static let cluster: UInt8 = 4
+    }
+    /// The field tags of DatastoreEndpointBindingEntryStruct.
+    public enum DatastoreEndpointBindingEntryStruct {
+        public static let nodeId: UInt8 = 0
+        public static let endpointId: UInt8 = 1
+        public static let listId: UInt8 = 2
+        public static let binding: UInt8 = 3
+        public static let statusEntry: UInt8 = 4
+    }
+    /// The field tags of DatastoreEndpointGroupIDEntryStruct.
+    public enum DatastoreEndpointGroupIDEntryStruct {
+        public static let nodeId: UInt8 = 0
+        public static let endpointId: UInt8 = 1
+        public static let groupId: UInt8 = 2
+        public static let statusEntry: UInt8 = 3
+    }
+    /// The field tags of DatastoreEndpointEntryStruct.
+    public enum DatastoreEndpointEntryStruct {
+        public static let endpointId: UInt8 = 0
+        public static let nodeId: UInt8 = 1
+        public static let friendlyName: UInt8 = 2
+    }
+    /// The field tags of DatastoreAccessControlTargetStruct.
+    public enum DatastoreAccessControlTargetStruct {
+        public static let cluster: UInt8 = 0
+        public static let endpoint: UInt8 = 1
+        public static let deviceType: UInt8 = 2
+    }
+    /// The field tags of DatastoreAccessControlEntryStruct.
+    public enum DatastoreAccessControlEntryStruct {
+        public static let privilege: UInt8 = 1
+        public static let authMode: UInt8 = 2
+        public static let subjects: UInt8 = 3
+        public static let targets: UInt8 = 4
+    }
+    /// The field tags of DatastoreACLEntryStruct.
+    public enum DatastoreACLEntryStruct {
+        public static let nodeId: UInt8 = 0
+        public static let listId: UInt8 = 1
+        public static let aclEntry: UInt8 = 2
+        public static let statusEntry: UInt8 = 3
+    }
+    /// The field tags of DatastoreNodeInformationEntryStruct.
+    public enum DatastoreNodeInformationEntryStruct {
+        public static let nodeId: UInt8 = 0
+        public static let friendlyName: UInt8 = 1
+        public static let commissioningStatusEntry: UInt8 = 2
+    }
+    /// The field tags of DatastoreAdministratorInformationEntryStruct.
+    public enum DatastoreAdministratorInformationEntryStruct {
+        public static let nodeId: UInt8 = 0
+        public static let friendlyName: UInt8 = 1
+        public static let vendorId: UInt8 = 2
+        public static let icac: UInt8 = 3
+    }
+    /// The field tags of DatastoreGroupKeySetStruct.
+    public enum DatastoreGroupKeySetStruct {
+        public static let groupKeySetId: UInt8 = 0
+        public static let groupKeySecurityPolicy: UInt8 = 1
+        public static let epochKey0: UInt8 = 2
+        public static let epochStartTime0: UInt8 = 3
+        public static let epochKey1: UInt8 = 4
+        public static let epochStartTime1: UInt8 = 5
+        public static let epochKey2: UInt8 = 6
+        public static let epochStartTime2: UInt8 = 7
+        public static let groupKeyMulticastPolicy: UInt8 = 8
     }
     public static let definition = ClusterDefinition(
         id: 0x0752, name: "JointFabricDatastore", revision: 1,
@@ -4401,6 +5214,13 @@ public enum MediaInputCluster {
         public static let usb: UInt64 = 10
         public static let other: UInt64 = 11
     }
+    /// The field tags of InputInfoStruct.
+    public enum InputInfoStruct {
+        public static let index: UInt8 = 0
+        public static let inputType: UInt8 = 1
+        public static let name: UInt8 = 2
+        public static let description: UInt8 = 3
+    }
     public static let definition = ClusterDefinition(
         id: 0x0507, name: "MediaInput", revision: 1,
         attributes: [
@@ -4498,6 +5318,22 @@ public enum MediaPlaybackCluster {
         public static let emergency: UInt64 = 16
         public static let karaoke: UInt64 = 17
     }
+    /// The field tags of PlaybackPositionStruct.
+    public enum PlaybackPositionStruct {
+        public static let updatedAt: UInt8 = 0
+        public static let position: UInt8 = 1
+    }
+    /// The field tags of TrackStruct.
+    public enum TrackStruct {
+        public static let id: UInt8 = 0
+        public static let trackAttributes: UInt8 = 1
+    }
+    /// The field tags of TrackAttributesStruct.
+    public enum TrackAttributesStruct {
+        public static let languageCode: UInt8 = 0
+        public static let characteristics: UInt8 = 1
+        public static let displayName: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0506, name: "MediaPlayback", revision: 2,
         attributes: [
@@ -4572,6 +5408,22 @@ public enum MessagesCluster {
         public static let medium: UInt64 = 1
         public static let high: UInt64 = 2
         public static let critical: UInt64 = 3
+    }
+    /// The field tags of MessageStruct.
+    public enum MessageStruct {
+        public static let messageId: UInt8 = 0
+        public static let priority: UInt8 = 1
+        public static let messageControl: UInt8 = 2
+        public static let startTime: UInt8 = 3
+        public static let duration: UInt8 = 4
+        public static let messageText: UInt8 = 5
+        public static let responses: UInt8 = 6
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of MessageResponseOptionStruct.
+    public enum MessageResponseOptionStruct {
+        public static let messageResponseId: UInt8 = 0
+        public static let label: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x0097, name: "Messages", revision: 3,
@@ -4746,6 +5598,17 @@ public enum ModeSelectCluster {
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
     }
+    /// The field tags of SemanticTagStruct.
+    public enum SemanticTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let semanticTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0050, name: "ModeSelect", revision: 2,
         attributes: [
@@ -4821,6 +5684,31 @@ public enum NetworkCommissioningCluster {
         public static let ipv6Failed: UInt64 = 10
         public static let ipBindFailed: UInt64 = 11
         public static let unknownError: UInt64 = 12
+    }
+    /// The field tags of NetworkInfoStruct.
+    public enum NetworkInfoStruct {
+        public static let networkId: UInt8 = 0
+        public static let connected: UInt8 = 1
+    }
+    /// The field tags of WiFiInterfaceScanResultStruct.
+    public enum WiFiInterfaceScanResultStruct {
+        public static let security: UInt8 = 0
+        public static let ssid: UInt8 = 1
+        public static let bssid: UInt8 = 2
+        public static let channel: UInt8 = 3
+        public static let wiFiBand: UInt8 = 4
+        public static let rssi: UInt8 = 5
+    }
+    /// The field tags of ThreadInterfaceScanResultStruct.
+    public enum ThreadInterfaceScanResultStruct {
+        public static let panId: UInt8 = 0
+        public static let extendedPanId: UInt8 = 1
+        public static let networkName: UInt8 = 2
+        public static let channel: UInt8 = 3
+        public static let version: UInt8 = 4
+        public static let extendedAddress: UInt8 = 5
+        public static let rssi: UInt8 = 6
+        public static let lqi: UInt8 = 7
     }
     public static let definition = ClusterDefinition(
         id: 0x0031, name: "NetworkCommissioning", revision: 2,
@@ -4906,6 +5794,12 @@ public enum OccupancySensingCluster {
         public static let ultrasonic: UInt64 = 1
         public static let pirAndUltrasonic: UInt64 = 2
         public static let physicalContact: UInt64 = 3
+    }
+    /// The field tags of HoldTimeLimitsStruct.
+    public enum HoldTimeLimitsStruct {
+        public static let holdTimeMin: UInt8 = 0
+        public static let holdTimeMax: UInt8 = 1
+        public static let holdTimeDefault: UInt8 = 2
     }
     public static let definition = ClusterDefinition(
         id: 0x0406, name: "OccupancySensing", revision: 7,
@@ -5043,6 +5937,23 @@ public enum OperationalCredentialsCluster {
         public static let labelConflict: UInt64 = 10
         public static let invalidFabricIndex: UInt64 = 11
     }
+    /// The field tags of NOCStruct.
+    public enum NOCStruct {
+        public static let noc: UInt8 = 1
+        public static let icac: UInt8 = 2
+        public static let vvsc: UInt8 = 3
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of FabricDescriptorStruct.
+    public enum FabricDescriptorStruct {
+        public static let rootPublicKey: UInt8 = 1
+        public static let vendorId: UInt8 = 2
+        public static let fabricId: UInt8 = 3
+        public static let nodeId: UInt8 = 4
+        public static let label: UInt8 = 5
+        public static let vidVerificationStatement: UInt8 = 6
+        public static let fabricIndex: UInt8 = 254
+    }
     public static let definition = ClusterDefinition(
         id: 0x003E, name: "OperationalCredentials", revision: 2,
         attributes: [
@@ -5104,6 +6015,17 @@ public enum OperationalStateCluster {
         public static let unableToStartOrResume: UInt64 = 1
         public static let unableToCompleteOperation: UInt64 = 2
         public static let commandInvalidInState: UInt64 = 3
+    }
+    /// The field tags of OperationalStateStruct.
+    public enum OperationalStateStruct {
+        public static let operationalStateId: UInt8 = 0
+        public static let operationalStateLabel: UInt8 = 1
+    }
+    /// The field tags of ErrorStateStruct.
+    public enum ErrorStateStruct {
+        public static let errorStateId: UInt8 = 0
+        public static let errorStateLabel: UInt8 = 1
+        public static let errorStateDetails: UInt8 = 2
     }
     public static let definition = ClusterDefinition(
         id: 0x0060, name: "OperationalState", revision: 3,
@@ -5210,6 +6132,12 @@ public enum OtaSoftwareUpdateRequestorCluster {
         public static let failure: UInt64 = 2
         public static let timeOut: UInt64 = 3
         public static let delayByProvider: UInt64 = 4
+    }
+    /// The field tags of ProviderLocation.
+    public enum ProviderLocation {
+        public static let providerNodeId: UInt8 = 1
+        public static let endpoint: UInt8 = 2
+        public static let fabricIndex: UInt8 = 254
     }
     public static let definition = ClusterDefinition(
         id: 0x002A, name: "OtaSoftwareUpdateRequestor", revision: 1,
@@ -5919,6 +6847,76 @@ public enum PushAvStreamTransportCluster {
         public static let invalidPreRollLength: UInt64 = 12
         public static let duplicateStreamValues: UInt64 = 13
     }
+    /// The field tags of SupportedFormatStruct.
+    public enum SupportedFormatStruct {
+        public static let containerFormat: UInt8 = 0
+        public static let ingestMethod: UInt8 = 1
+    }
+    /// The field tags of VideoStreamStruct.
+    public enum VideoStreamStruct {
+        public static let videoStreamName: UInt8 = 0
+        public static let videoStreamId: UInt8 = 1
+    }
+    /// The field tags of AudioStreamStruct.
+    public enum AudioStreamStruct {
+        public static let audioStreamName: UInt8 = 0
+        public static let audioStreamId: UInt8 = 1
+    }
+    /// The field tags of CMAFContainerOptionsStruct.
+    public enum CMAFContainerOptionsStruct {
+        public static let cmafInterface: UInt8 = 0
+        public static let segmentDuration: UInt8 = 1
+        public static let chunkDuration: UInt8 = 2
+        public static let sessionGroup: UInt8 = 3
+        public static let trackName: UInt8 = 4
+        public static let metadataEnabled: UInt8 = 7
+    }
+    /// The field tags of ContainerOptionsStruct.
+    public enum ContainerOptionsStruct {
+        public static let containerType: UInt8 = 0
+        public static let cmafContainerOptions: UInt8 = 1
+    }
+    /// The field tags of TransportZoneOptionsStruct.
+    public enum TransportZoneOptionsStruct {
+        public static let zone: UInt8 = 0
+        public static let sensitivity: UInt8 = 1
+    }
+    /// The field tags of TransportTriggerOptionsStruct.
+    public enum TransportTriggerOptionsStruct {
+        public static let triggerType: UInt8 = 0
+        public static let motionZones: UInt8 = 1
+        public static let motionSensitivity: UInt8 = 2
+        public static let motionTimeControl: UInt8 = 3
+        public static let maxPreRollLen: UInt8 = 4
+    }
+    /// The field tags of TransportMotionTriggerTimeControlStruct.
+    public enum TransportMotionTriggerTimeControlStruct {
+        public static let initialDuration: UInt8 = 0
+        public static let augmentationDuration: UInt8 = 1
+        public static let maxDuration: UInt8 = 2
+        public static let blindDuration: UInt8 = 3
+    }
+    /// The field tags of TransportOptionsStruct.
+    public enum TransportOptionsStruct {
+        public static let streamUsage: UInt8 = 0
+        public static let videoStreamId: UInt8 = 1
+        public static let audioStreamId: UInt8 = 2
+        public static let tlsEndpointId: UInt8 = 3
+        public static let url: UInt8 = 4
+        public static let triggerOptions: UInt8 = 5
+        public static let ingestMethod: UInt8 = 6
+        public static let containerOptions: UInt8 = 7
+        public static let expiryTime: UInt8 = 8
+        public static let videoStreams: UInt8 = 9
+        public static let audioStreams: UInt8 = 10
+    }
+    /// The field tags of TransportConfigurationStruct.
+    public enum TransportConfigurationStruct {
+        public static let connectionId: UInt8 = 0
+        public static let transportStatus: UInt8 = 1
+        public static let transportOptions: UInt8 = 2
+        public static let fabricIndex: UInt8 = 254
+    }
     public static let definition = ClusterDefinition(
         id: 0x0555, name: "PushAvStreamTransport", revision: 2,
         attributes: [
@@ -6248,6 +7246,40 @@ public enum ScenesManagementCluster {
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let sceneNames = Feature(rawValue: 1 << 0)
     }
+    /// The field tags of SceneInfoStruct.
+    public enum SceneInfoStruct {
+        public static let sceneCount: UInt8 = 0
+        public static let currentScene: UInt8 = 1
+        public static let currentGroup: UInt8 = 2
+        public static let sceneValid: UInt8 = 3
+        public static let remainingCapacity: UInt8 = 4
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of AttributeValuePairStruct.
+    public enum AttributeValuePairStruct {
+        public static let attributeId: UInt8 = 0
+        public static let valueUnsigned8: UInt8 = 1
+        public static let valueSigned8: UInt8 = 2
+        public static let valueUnsigned16: UInt8 = 3
+        public static let valueSigned16: UInt8 = 4
+        public static let valueUnsigned32: UInt8 = 5
+        public static let valueSigned32: UInt8 = 6
+        public static let valueUnsigned64: UInt8 = 7
+        public static let valueSigned64: UInt8 = 8
+    }
+    /// The field tags of ExtensionFieldSetStruct.
+    public enum ExtensionFieldSetStruct {
+        public static let clusterId: UInt8 = 0
+        public static let attributeValueList: UInt8 = 1
+    }
+    /// The field tags of LogicalSceneTable.
+    public enum LogicalSceneTable {
+        public static let sceneGroupId: UInt8 = 0
+        public static let sceneId: UInt8 = 1
+        public static let sceneName: UInt8 = 2
+        public static let sceneTransitionTime: UInt8 = 3
+        public static let extensionFields: UInt8 = 4
+    }
     public static let definition = ClusterDefinition(
         id: 0x0062, name: "ScenesManagement", revision: 1,
         attributes: [
@@ -6312,6 +7344,34 @@ public enum ServiceAreaCluster {
         public static let invalidAreaList: UInt64 = 1
         public static let invalidInMode: UInt64 = 2
         public static let invalidSkippedArea: UInt64 = 3
+    }
+    /// The field tags of LandmarkInfoStruct.
+    public enum LandmarkInfoStruct {
+        public static let landmarkTag: UInt8 = 0
+        public static let relativePositionTag: UInt8 = 1
+    }
+    /// The field tags of AreaInfoStruct.
+    public enum AreaInfoStruct {
+        public static let locationInfo: UInt8 = 0
+        public static let landmarkInfo: UInt8 = 1
+    }
+    /// The field tags of MapStruct.
+    public enum MapStruct {
+        public static let mapId: UInt8 = 0
+        public static let name: UInt8 = 1
+    }
+    /// The field tags of AreaStruct.
+    public enum AreaStruct {
+        public static let areaId: UInt8 = 0
+        public static let mapId: UInt8 = 1
+        public static let areaInfo: UInt8 = 2
+    }
+    /// The field tags of ProgressStruct.
+    public enum ProgressStruct {
+        public static let areaId: UInt8 = 0
+        public static let status: UInt8 = 1
+        public static let totalOperationalTime: UInt8 = 2
+        public static let estimatedTime: UInt8 = 3
     }
     public static let definition = ClusterDefinition(
         id: 0x0150, name: "ServiceArea", revision: 2,
@@ -6468,6 +7528,14 @@ public enum SoftwareDiagnosticsCluster {
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let watermarks = Feature(rawValue: 1 << 0)
     }
+    /// The field tags of ThreadMetricsStruct.
+    public enum ThreadMetricsStruct {
+        public static let id: UInt8 = 0
+        public static let name: UInt8 = 1
+        public static let stackFreeCurrent: UInt8 = 2
+        public static let stackFreeMinimum: UInt8 = 3
+        public static let stackSize: UInt8 = 4
+    }
     public static let definition = ClusterDefinition(
         id: 0x0034, name: "SoftwareDiagnostics", revision: 1,
         attributes: [
@@ -6574,6 +7642,11 @@ public enum TargetNavigatorCluster {
         public static let success: UInt64 = 0
         public static let targetNotFound: UInt64 = 1
         public static let notAllowed: UInt64 = 2
+    }
+    /// The field tags of TargetInfoStruct.
+    public enum TargetInfoStruct {
+        public static let identifier: UInt8 = 0
+        public static let name: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x0505, name: "TargetNavigator", revision: 2,
@@ -6888,6 +7961,58 @@ public enum ThermostatCluster {
         public static let setpointHoldOff: UInt64 = 0
         public static let setpointHoldOn: UInt64 = 1
     }
+    /// The field tags of PresetStruct.
+    public enum PresetStruct {
+        public static let presetHandle: UInt8 = 0
+        public static let presetScenario: UInt8 = 1
+        public static let name: UInt8 = 2
+        public static let coolingSetpoint: UInt8 = 3
+        public static let heatingSetpoint: UInt8 = 4
+        public static let builtIn: UInt8 = 5
+    }
+    /// The field tags of PresetTypeStruct.
+    public enum PresetTypeStruct {
+        public static let presetScenario: UInt8 = 0
+        public static let numberOfPresets: UInt8 = 1
+        public static let presetTypeFeatures: UInt8 = 2
+    }
+    /// The field tags of WeeklyScheduleTransitionStruct.
+    public enum WeeklyScheduleTransitionStruct {
+        public static let transitionTime: UInt8 = 0
+        public static let heatSetpoint: UInt8 = 1
+        public static let coolSetpoint: UInt8 = 2
+    }
+    /// The field tags of ScheduleStruct.
+    public enum ScheduleStruct {
+        public static let scheduleHandle: UInt8 = 0
+        public static let systemMode: UInt8 = 1
+        public static let name: UInt8 = 2
+        public static let presetHandle: UInt8 = 3
+        public static let transitions: UInt8 = 4
+        public static let builtIn: UInt8 = 5
+    }
+    /// The field tags of ScheduleTransitionStruct.
+    public enum ScheduleTransitionStruct {
+        public static let dayOfWeek: UInt8 = 0
+        public static let transitionTime: UInt8 = 1
+        public static let presetHandle: UInt8 = 2
+        public static let systemMode: UInt8 = 3
+        public static let coolingSetpoint: UInt8 = 4
+        public static let heatingSetpoint: UInt8 = 5
+    }
+    /// The field tags of ScheduleTypeStruct.
+    public enum ScheduleTypeStruct {
+        public static let systemMode: UInt8 = 0
+        public static let numberOfSchedules: UInt8 = 1
+        public static let scheduleTypeFeatures: UInt8 = 2
+    }
+    /// The field tags of ThermostatSuggestionStruct.
+    public enum ThermostatSuggestionStruct {
+        public static let uniqueId: UInt8 = 0
+        public static let presetHandle: UInt8 = 1
+        public static let effectiveTime: UInt8 = 2
+        public static let expirationTime: UInt8 = 3
+    }
     public static let definition = ClusterDefinition(
         id: 0x0201, name: "Thermostat", revision: 11,
         attributes: [
@@ -7163,6 +8288,56 @@ public enum ThreadNetworkDiagnosticsCluster {
         public static let router: UInt64 = 5
         public static let leader: UInt64 = 6
     }
+    /// The field tags of NeighborTableStruct.
+    public enum NeighborTableStruct {
+        public static let extAddress: UInt8 = 0
+        public static let age: UInt8 = 1
+        public static let rloc16: UInt8 = 2
+        public static let linkFrameCounter: UInt8 = 3
+        public static let mleFrameCounter: UInt8 = 4
+        public static let lqi: UInt8 = 5
+        public static let averageRssi: UInt8 = 6
+        public static let lastRssi: UInt8 = 7
+        public static let frameErrorRate: UInt8 = 8
+        public static let messageErrorRate: UInt8 = 9
+        public static let rxOnWhenIdle: UInt8 = 10
+        public static let fullThreadDevice: UInt8 = 11
+        public static let fullNetworkData: UInt8 = 12
+        public static let isChild: UInt8 = 13
+    }
+    /// The field tags of RouteTableStruct.
+    public enum RouteTableStruct {
+        public static let extAddress: UInt8 = 0
+        public static let rloc16: UInt8 = 1
+        public static let routerId: UInt8 = 2
+        public static let nextHop: UInt8 = 3
+        public static let pathCost: UInt8 = 4
+        public static let lqiIn: UInt8 = 5
+        public static let lqiOut: UInt8 = 6
+        public static let age: UInt8 = 7
+        public static let allocated: UInt8 = 8
+        public static let linkEstablished: UInt8 = 9
+    }
+    /// The field tags of SecurityPolicy.
+    public enum SecurityPolicy {
+        public static let rotationTime: UInt8 = 0
+        public static let flags: UInt8 = 1
+    }
+    /// The field tags of OperationalDatasetComponents.
+    public enum OperationalDatasetComponents {
+        public static let activeTimestampPresent: UInt8 = 0
+        public static let pendingTimestampPresent: UInt8 = 1
+        public static let masterKeyPresent: UInt8 = 2
+        public static let networkNamePresent: UInt8 = 3
+        public static let extendedPanIdPresent: UInt8 = 4
+        public static let meshLocalPrefixPresent: UInt8 = 5
+        public static let delayPresent: UInt8 = 6
+        public static let panIdPresent: UInt8 = 7
+        public static let channelPresent: UInt8 = 8
+        public static let pskcPresent: UInt8 = 9
+        public static let securityPolicyPresent: UInt8 = 10
+        public static let channelMaskPresent: UInt8 = 11
+    }
     public static let definition = ClusterDefinition(
         id: 0x0035, name: "ThreadNetworkDiagnostics", revision: 3,
         attributes: [
@@ -7256,6 +8431,13 @@ public enum ThreadNetworkDirectoryCluster {
         public static let removeNetwork: CommandID = 0x01
         public static let getOperationalDataset: CommandID = 0x02
         public static let operationalDatasetResponse: CommandID = 0x03
+    }
+    /// The field tags of ThreadNetworkStruct.
+    public enum ThreadNetworkStruct {
+        public static let extendedPanId: UInt8 = 0
+        public static let networkName: UInt8 = 1
+        public static let channel: UInt8 = 2
+        public static let activeTimestamp: UInt8 = 3
     }
     public static let definition = ClusterDefinition(
         id: 0x0453, name: "ThreadNetworkDirectory", revision: 1,
@@ -7398,6 +8580,29 @@ public enum TimeSynchronizationCluster {
     public enum StatusCodeEnum {
         public static let timeNotAccepted: UInt64 = 2
     }
+    /// The field tags of TrustedTimeSourceStruct.
+    public enum TrustedTimeSourceStruct {
+        public static let fabricIndex: UInt8 = 0
+        public static let nodeId: UInt8 = 1
+        public static let endpoint: UInt8 = 2
+    }
+    /// The field tags of FabricScopedTrustedTimeSourceStruct.
+    public enum FabricScopedTrustedTimeSourceStruct {
+        public static let nodeId: UInt8 = 0
+        public static let endpoint: UInt8 = 1
+    }
+    /// The field tags of TimeZoneStruct.
+    public enum TimeZoneStruct {
+        public static let offset: UInt8 = 0
+        public static let validAt: UInt8 = 1
+        public static let name: UInt8 = 2
+    }
+    /// The field tags of DSTOffsetStruct.
+    public enum DSTOffsetStruct {
+        public static let offset: UInt8 = 0
+        public static let validStarting: UInt8 = 1
+        public static let validUntil: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0038, name: "TimeSynchronization", revision: 2,
         attributes: [
@@ -7459,6 +8664,19 @@ public enum TlsCertificateManagementCluster {
         public static let lookupClientCertificateResponse: CommandID = 0x0D
         public static let removeClientCertificate: CommandID = 0x0E
     }
+    /// The field tags of TLSCertStruct.
+    public enum TLSCertStruct {
+        public static let caid: UInt8 = 0
+        public static let certificate: UInt8 = 1
+        public static let fabricIndex: UInt8 = 254
+    }
+    /// The field tags of TLSClientCertificateDetailStruct.
+    public enum TLSClientCertificateDetailStruct {
+        public static let ccdid: UInt8 = 0
+        public static let clientCertificate: UInt8 = 1
+        public static let intermediateCertificates: UInt8 = 2
+        public static let fabricIndex: UInt8 = 254
+    }
     public static let definition = ClusterDefinition(
         id: 0x0801, name: "TlsCertificateManagement", revision: 1,
         attributes: [
@@ -7504,6 +8722,16 @@ public enum TlsClientManagementCluster {
         public static let clientCertificateNotFound: UInt64 = 4
         public static let endpointInUse: UInt64 = 5
         public static let invalidTime: UInt64 = 6
+    }
+    /// The field tags of TLSEndpointStruct.
+    public enum TLSEndpointStruct {
+        public static let endpointId: UInt8 = 0
+        public static let hostname: UInt8 = 1
+        public static let port: UInt8 = 2
+        public static let caid: UInt8 = 3
+        public static let ccdid: UInt8 = 4
+        public static let referenceCount: UInt8 = 5
+        public static let fabricIndex: UInt8 = 254
     }
     public static let definition = ClusterDefinition(
         id: 0x0802, name: "TlsClientManagement", revision: 1,
@@ -7701,6 +8929,15 @@ public enum WaterHeaterManagementCluster {
     public enum BoostStateEnum {
         public static let inactive: UInt64 = 0
         public static let active: UInt64 = 1
+    }
+    /// The field tags of WaterHeaterBoostInfoStruct.
+    public enum WaterHeaterBoostInfoStruct {
+        public static let duration: UInt8 = 0
+        public static let oneShot: UInt8 = 1
+        public static let emergencyBoost: UInt8 = 2
+        public static let temporarySetpoint: UInt8 = 3
+        public static let targetPercentage: UInt8 = 4
+        public static let targetReheat: UInt8 = 5
     }
     public static let definition = ClusterDefinition(
         id: 0x0094, name: "WaterHeaterManagement", revision: 2,
@@ -8125,6 +9362,34 @@ public enum ZoneManagementCluster {
     public enum ZoneEventStoppedReasonEnum {
         public static let actionStopped: UInt64 = 0
         public static let timeout: UInt64 = 1
+    }
+    /// The field tags of TwoDCartesianVertexStruct.
+    public enum TwoDCartesianVertexStruct {
+        public static let x: UInt8 = 0
+        public static let y: UInt8 = 1
+    }
+    /// The field tags of TwoDCartesianZoneStruct.
+    public enum TwoDCartesianZoneStruct {
+        public static let name: UInt8 = 0
+        public static let use: UInt8 = 1
+        public static let vertices: UInt8 = 2
+        public static let color: UInt8 = 3
+    }
+    /// The field tags of ZoneInformationStruct.
+    public enum ZoneInformationStruct {
+        public static let zoneId: UInt8 = 0
+        public static let zoneType: UInt8 = 1
+        public static let zoneSource: UInt8 = 2
+        public static let twoDCartesianZone: UInt8 = 3
+    }
+    /// The field tags of ZoneTriggerControlStruct.
+    public enum ZoneTriggerControlStruct {
+        public static let zoneId: UInt8 = 0
+        public static let initialDuration: UInt8 = 1
+        public static let augmentationDuration: UInt8 = 2
+        public static let maxDuration: UInt8 = 3
+        public static let blindDuration: UInt8 = 4
+        public static let sensitivity: UInt8 = 5
     }
     public static let definition = ClusterDefinition(
         id: 0x0550, name: "ZoneManagement", revision: 1,

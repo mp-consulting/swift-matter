@@ -103,7 +103,7 @@ function parse(source) {
         const [properties = {}, ...children] = args;
         return { kind: name, ...properties, children: children.filter(child => child && child.kind) };
     };
-    return { call, identifier, value, space, at: () => index, seek: position => { index = position; } };
+    return { call, identifier, seek: position => { index = position; } };
 }
 
 const elements = [];
@@ -120,9 +120,10 @@ for (const file of readdirSync(directory).filter(name => name.endsWith(".element
 const kinds = kind => elements.filter(element => element.kind === kind);
 const childrenOf = (element, kind) => element.children.filter(child => child.kind === kind);
 const hex = (value, width) => "0x" + value.toString(16).toUpperCase().padStart(width, "0");
+/// UpperCamelCase of an element name.
+const pascal = name => name.replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ").map(word => word[0].toUpperCase() + word.slice(1)).join("");
 const camel = name => {
-    const words = name.replace(/[^A-Za-z0-9]+/g, " ").trim();
-    const joined = words.split(" ").map(word => word[0].toUpperCase() + word.slice(1)).join("");
+    const joined = pascal(name);
     let result = joined.replace(/^[A-Z]+(?=[A-Z][a-z]|$)|^[A-Z]/, prefix => prefix.toLowerCase());
     if (/^\d/.test(result)) result = "_" + result;
     return SWIFT_KEYWORDS.has(result) ? "`" + result + "`" : result;
@@ -135,7 +136,7 @@ const SWIFT_KEYWORDS = new Set(["default", "repeat", "return", "switch", "case",
 
 /// The Swift type of a cluster: its name in UpperCamelCase and "Cluster".
 function typeNameOf(cluster) {
-    return cluster.name.replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ").map(word => word[0].toUpperCase() + word.slice(1)).join("") + "Cluster";
+    return pascal(cluster.name) + "Cluster";
 }
 
 const privileges = { V: ".view", P: ".proxyView", O: ".operate", M: ".manage", A: ".administer" };
@@ -144,9 +145,9 @@ const privileges = { V: ".view", P: ".proxyView", O: ".operate", M: ".manage", A
 function access(text, defaults) {
     const tokens = (text ?? "").split(/\s+/).filter(Boolean);
     let read = defaults.read, write = null, invoke = defaults.invoke, fabricScoped = false, sensitive = false, timed = false;
-    let readable = defaults.readable, writable = false;
+    let writable = false;
     for (const token of tokens) {
-        if (/^R(\[?W\]?)?$/.test(token)) { readable = true; writable = token.includes("W"); continue; }
+        if (/^R(\[?W\]?)?$/.test(token)) { writable = token.includes("W"); continue; }
         if (token === "W") { writable = true; continue; }
         if (token === "F") { fabricScoped = true; continue; }
         if (token === "S") { sensitive = true; continue; }
@@ -159,12 +160,11 @@ function access(text, defaults) {
                 write = privileges[letters[letters.length > 1 ? 1 : 0]];
             } else {
                 invoke = privileges[letters[0]];
-                read = privileges[letters[0]];
             }
         }
     }
     if (writable && !write) write = ".operate";
-    return { read, write: writable ? write : null, invoke, fabricScoped, sensitive, timed, readable };
+    return { read, write: writable ? write : null, invoke, fabricScoped, sensitive, timed };
 }
 
 const lines = [];
@@ -193,6 +193,7 @@ for (const cluster of clusters) {
     const commands = childrenOf(cluster, "Command").filter(command => command.id !== undefined);
     const events = childrenOf(cluster, "Event").filter(event => event.id !== undefined);
     const enums = childrenOf(cluster, "Datatype").filter(datatype => /^enum/.test(datatype.type ?? ""));
+    const structs = childrenOf(cluster, "Datatype").filter(datatype => datatype.type === "struct");
 
     emit(`/// ${cluster.name} (${hex(cluster.id, 4)}), revision ${revision}.`);
     emit(`public enum ${typeName} {`);
@@ -233,11 +234,19 @@ for (const cluster of clusters) {
         emit("    }");
     }
 
+    for (const datatype of structs) {
+        const fields = childrenOf(datatype, "Field").filter(field => field.id !== undefined);
+        if (!fields.length) continue;
+        emit(`    /// The field tags of ${datatype.name}.`);
+        emit(`    public enum ${datatype.name.replace(/[^A-Za-z0-9]/g, "")} {`);
+        for (const field of fields) emit(`        public static let ${camel(field.name)}: UInt8 = ${field.id}`);
+        emit("    }");
+    }
     emit("    public static let definition = ClusterDefinition(");
     emit(`        id: ${hex(cluster.id, 4)}, name: "${cluster.name}", revision: ${revision},`);
     emit("        attributes: [");
     for (const attribute of attributes) {
-        const rights = access(attribute.access, { kind: "attribute", read: ".view", readable: true });
+        const rights = access(attribute.access, { kind: "attribute", read: ".view" });
         const quality = (attribute.quality ?? "").split(/\s+/);
         const flags = [];
         if (attribute.type === "list") flags.push(".list");
@@ -254,7 +263,7 @@ for (const cluster of clusters) {
     emit("        ],");
     emit("        commands: [");
     for (const command of commands.filter(command => command.direction !== "response")) {
-        const rights = access(command.access, { kind: "command", invoke: ".operate", read: ".operate" });
+        const rights = access(command.access, { kind: "command", invoke: ".operate" });
         const response = command.response && command.response !== "status"
             ? commands.find(candidate => candidate.name === command.response && candidate.direction === "response")
             : undefined;
@@ -263,7 +272,7 @@ for (const cluster of clusters) {
     emit("        ],");
     emit("        events: [");
     for (const event of events) {
-        const rights = access(event.access, { kind: "attribute", read: ".view", readable: true });
+        const rights = access(event.access, { kind: "attribute", read: ".view" });
         emit(`            EventDefinition(id: ${hex(event.id, 2)}, name: "${event.name}", priority: .${(event.priority ?? "info").toLowerCase()}, read: ${rights.read}, fabricSensitive: ${rights.sensitive}),`);
     }
     emit("        ]");

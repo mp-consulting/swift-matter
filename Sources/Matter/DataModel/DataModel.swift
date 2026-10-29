@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 
 /// A node's endpoints and clusters (Core §9.2), with the Descriptor clusters derived from them.
 
@@ -54,7 +55,7 @@ public enum DataModelChange: Sendable {
     case attributes(EndpointNumber, ClusterID, [AttributeID])
     case event(EventRecord)
     /// Endpoints were added or removed: PartsList and wildcard paths change.
-    case structure
+    case structure(added: [EndpointNumber], removed: [EndpointNumber])
 }
 
 public enum DataModelError: Error, Equatable, Sendable {
@@ -69,7 +70,8 @@ public actor DataModel {
     private var events: [EventRecord] = []
     private var nextEventNumber: UInt64
     private let maxEvents: Int
-    private var observers: [UInt64: AsyncStream<DataModelChange>.Continuation] = [:]
+    /// Locked so cluster changes are published synchronously, in order, without hopping onto the actor.
+    private nonisolated let observers = NIOLockedValueBox<[UInt64: AsyncStream<DataModelChange>.Continuation]>([:])
     private var nextObserver: UInt64 = 0
 
     public init(firstEventNumber: UInt64 = 0, maxEvents: Int = 256) {
@@ -92,23 +94,39 @@ public actor DataModel {
         await descriptor.attach(endpoint: endpoint.number, reporter: reporter)
         endpoints[endpoint.number] = endpoint
         descriptors[endpoint.number] = descriptor
-        await refreshDescriptors()
-        publish(.structure)
+        await refreshDescriptors([endpoint.number] + ancestors(of: endpoint.number))
+        publish(.structure(added: [endpoint.number], removed: []))
     }
 
     public func remove(_ number: EndpointNumber) async throws {
-        guard endpoints.removeValue(forKey: number) != nil else { throw DataModelError.unknownEndpoint(number) }
-        descriptors[number] = nil
+        guard endpoints[number] != nil else { throw DataModelError.unknownEndpoint(number) }
+        let affected = ancestors(of: number)
         // Children of a removed endpoint go with it.
-        for child in endpoints.values.filter({ $0.parent == number }) { try await remove(child.number) }
-        await refreshDescriptors()
-        publish(.structure)
+        let removed = [number] + parts(of: number)
+        for gone in removed {
+            endpoints[gone] = nil
+            descriptors[gone] = nil
+        }
+        await refreshDescriptors(affected)
+        publish(.structure(added: [], removed: removed))
     }
 
-    /// DeviceTypeList, ServerList, ClientList, PartsList and TagList (Core §9.5).
-    private func refreshDescriptors() async {
-        for (number, endpoint) in endpoints {
-            guard let descriptor = descriptors[number] else { continue }
+    /// The endpoints whose PartsList includes `number`: its parents up the tree, and the root.
+    private func ancestors(of number: EndpointNumber) -> [EndpointNumber] {
+        var result: [EndpointNumber] = []
+        var current = endpoints[number]?.parent
+        while let parent = current, !result.contains(parent) {
+            result.append(parent)
+            current = endpoints[parent]?.parent
+        }
+        if number != 0, !result.contains(0) { result.append(0) }
+        return result
+    }
+
+    /// DeviceTypeList, ServerList, ClientList, PartsList and TagList (Core §9.5) of some endpoints.
+    private func refreshDescriptors(_ numbers: [EndpointNumber]) async {
+        for number in numbers {
+            guard let endpoint = endpoints[number], let descriptor = descriptors[number] else { continue }
             let deviceTypes = endpoint.deviceTypes.map { type in
                 TLVElement(.structure([.field(0, .unsigned(UInt64(type.id))), .field(1, .unsigned(UInt64(type.revision)))]))
             }
@@ -180,11 +198,9 @@ public actor DataModel {
         return record
     }
 
-    public func events(endpoint: EndpointNumber?, cluster: ClusterID?, event: EventID?, minimumNumber: UInt64) -> [EventRecord] {
-        events.filter {
-            (endpoint == nil || $0.endpoint == endpoint) && (cluster == nil || $0.cluster == cluster)
-                && (event == nil || $0.event == event) && $0.number >= minimumNumber
-        }
+    /// The recorded events numbered `minimum` or more.
+    public func events(from minimum: UInt64) -> [EventRecord] {
+        events.filter { $0.number >= minimum }
     }
 
     public var eventNumber: UInt64 { nextEventNumber }
@@ -195,20 +211,22 @@ public actor DataModel {
     public func changes() -> (UInt64, AsyncStream<DataModelChange>) {
         let (stream, continuation) = AsyncStream.makeStream(of: DataModelChange.self, bufferingPolicy: .bufferingNewest(1024))
         nextObserver += 1
-        observers[nextObserver] = continuation
-        return (nextObserver, stream)
+        let id = nextObserver
+        observers.withLockedValue { $0[id] = continuation }
+        return (id, stream)
     }
 
-    public func stopObserving(_ id: UInt64) { observers.removeValue(forKey: id)?.finish() }
+    public func stopObserving(_ id: UInt64) { observers.withLockedValue { $0.removeValue(forKey: id) }?.finish() }
 
-    private func publish(_ change: DataModelChange) {
-        for continuation in observers.values { continuation.yield(change) }
+    private nonisolated func publish(_ change: DataModelChange) {
+        observers.withLockedValue { observers in
+            for continuation in observers.values { continuation.yield(change) }
+        }
     }
 
     private nonisolated var changeReporter: ChangeReporter {
         ChangeReporter { [weak self] endpoint, cluster, attributes in
-            guard let self else { return }
-            Task { await self.publish(.attributes(endpoint, cluster, attributes)) }
+            self?.publish(.attributes(endpoint, cluster, attributes))
         }
     }
 }

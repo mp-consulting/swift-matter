@@ -10,22 +10,21 @@ actor Subscription {
     private unowned let server: InteractionServer
     private var dirty = Set<ConcreteAttribute>()
     private var pendingEvents: [EventRecord] = []
-    private var structureChanged = false
-    private var reportedClusters: Set<ConcreteCluster>
+    /// Endpoints added since the last report: reported in full when the paths cover them.
+    private var addedEndpoints = Set<EndpointNumber>()
     private var eventMinimum: UInt64
     private var wake: AsyncStream<Void>.Continuation?
     private var task: Task<Void, Never>?
     private var observerID: UInt64?
 
     init(id: UInt32, session: SessionInfo, spec: InteractionServer.ReadSpec, minInterval: Duration, maxInterval: Duration,
-         server: InteractionServer, reportedClusters: Set<ConcreteCluster>, eventMinimum: UInt64) {
+         server: InteractionServer, eventMinimum: UInt64) {
         self.id = id
         self.session = session
         self.spec = spec
         self.minInterval = minInterval
         self.maxInterval = maxInterval
         self.server = server
-        self.reportedClusters = reportedClusters
         self.eventMinimum = eventMinimum
     }
 
@@ -61,16 +60,22 @@ actor Subscription {
                 dirty.insert(ConcreteAttribute(endpoint, cluster, attribute))
             }
         case .event(let record):
-            if record.number >= eventMinimum, spec.events.contains(where: { $0.matches(record) }) { pendingEvents.append(record) }
-        case .structure:
-            structureChanged = true
+            if record.number >= eventMinimum, spec.events.contains(where: { $0.matches(record) }) {
+                pendingEvents.append(record)
+                // Events beyond the node's own log would be lost anyway.
+                if pendingEvents.count > 256 { pendingEvents.removeFirst(pendingEvents.count - 256) }
+            }
+        case .structure(let added, let removed):
+            addedEndpoints.formUnion(added)
+            addedEndpoints.subtract(removed)
+            dirty = dirty.filter { !removed.contains($0.endpoint) }
         }
-        if !dirty.isEmpty || !pendingEvents.isEmpty || structureChanged { wake?.yield() }
+        if hasChanges { wakeUp() }
     }
 
     private func wakeUp() { wake?.yield() }
 
-    private var hasChanges: Bool { !dirty.isEmpty || !pendingEvents.isEmpty || structureChanged }
+    private var hasChanges: Bool { !dirty.isEmpty || !pendingEvents.isEmpty || !addedEndpoints.isEmpty }
 
     private func run(layer: MessageLayer, wakes: AsyncStream<Void>) async {
         var lastReport = ContinuousClock.now
@@ -106,30 +111,37 @@ actor Subscription {
     private func report(layer: MessageLayer) async throws {
         let changed = dirty
         let events = pendingEvents
-        let structure = structureChanged
+        let added = addedEndpoints
         dirty = []
         pendingEvents = []
-        structureChanged = false
+        addedEndpoints = []
 
         var attributes = changed.isEmpty ? [] : await server.attributeReports(spec.attributes, session: session,
                                                                               fabricFiltered: spec.fabricFiltered, only: changed)
-        if structure {
-            // New endpoints or clusters under wildcard paths are reported in full.
-            let all = await server.attributeReports(spec.attributes, session: session, fabricFiltered: spec.fabricFiltered)
-            let added = all.filter { report in report.cluster.map { !reportedClusters.contains($0) } ?? false }
-            attributes += added
-            reportedClusters = Set(all.compactMap(\.cluster))
+        // New endpoints under wildcard paths are reported in full.
+        for endpoint in added.sorted() {
+            let paths = spec.attributes.filter { $0.endpoint == nil }.map { path -> AttributePath in
+                var concrete = path
+                concrete.endpoint = endpoint
+                return concrete
+            }
+            attributes += await server.attributeReports(paths, session: session, fabricFiltered: spec.fabricFiltered)
+                .filter { if case .data = $0 { true } else { false } }
         }
         let eventReports = await server.eventReports(spec.events, session: session, minimum: eventMinimum, only: events)
         if let last = events.last { eventMinimum = last.number + 1 }
 
+        // The session must still be the subscriber's: a reused session id belongs to someone else.
+        guard let current = await layer.session(session.localSessionID), current.peerNodeID == session.peerNodeID,
+              current.fabricIndex == session.fabricIndex, current.peerSessionID == session.peerSessionID
+        else { throw ExchangeError.sessionGone }
         let exchange = try await layer.newExchange(session: session.localSessionID, protocolID: .interactionModel)
         do {
             try await server.sendReports(attributes, eventReports, subscriptionID: id, on: exchange, finalNeedsResponse: true)
-            await exchange.close()
         } catch {
             await exchange.close()
             throw error
         }
+        await exchange.close()
     }
 }

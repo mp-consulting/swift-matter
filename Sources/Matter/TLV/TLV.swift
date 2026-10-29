@@ -96,10 +96,12 @@ extension TLVValue {
         }
     }
 
-    /// A structure's member by context tag.
+    /// A structure's or a list's member by context tag.
     public subscript(tag: UInt8) -> TLVValue? {
-        guard case .structure(let elements) = self else { return nil }
-        return elements.first { $0.tag == .context(tag) }?.value
+        switch self {
+        case .structure(let elements), .list(let elements): elements.first { $0.tag == .context(tag) }?.value
+        default: nil
+        }
     }
 }
 

@@ -72,6 +72,40 @@ extension ClusterHandler {
     }
 }
 
+/// Fabric-scoped lists (Core §7.13.6): each entry carries the FabricIndex of the fabric that wrote it.
+public enum FabricScopedList {
+    /// What a read returns: the accessing fabric's entries, and with filtering off the others' too, reduced to their
+    /// FabricIndex so no fabric-sensitive field leaks (Core §8.4.3.2).
+    public static func read(_ stored: TLVValue, context: AccessContext) -> TLVValue {
+        guard case .array(let entries) = stored else { return stored }
+        let own = context.fabricIndex.map(UInt64.init)
+        return .array(entries.compactMap { entry in
+            if entry.value[fabricIndexFieldTag]?.uint == own { return entry }
+            guard !context.isFabricFiltered, let index = entry.value[fabricIndexFieldTag] else { return nil }
+            return TLVElement(entry.tag, .structure([.field(fabricIndexFieldTag, index)]))
+        })
+    }
+
+    /// The stored list after a write: the accessing fabric's entries replaced by the written ones, stamped with its
+    /// FabricIndex whatever the writer put there.
+    public static func merge(_ written: TLVValue, into stored: TLVValue, context: AccessContext) throws -> TLVValue {
+        guard let fabric = context.fabricIndex, case .array(let entries) = written else { throw StatusError(.unsupportedAccess) }
+        let stamped = try entries.map { entry -> TLVElement in
+            guard case .structure(var fields) = entry.value else { throw StatusError(.constraintError) }
+            fields.removeAll { $0.tag == .context(fabricIndexFieldTag) }
+            fields.append(.field(fabricIndexFieldTag, .unsigned(UInt64(fabric))))
+            return TLVElement(entry.tag, .structure(fields))
+        }
+        let others = (stored.elements ?? []).filter { $0.value[fabricIndexFieldTag]?.uint != UInt64(fabric) }
+        return .array(others + stamped)
+    }
+
+    /// The entries of one fabric.
+    public static func entries(_ stored: TLVValue, fabric: FabricIndex) -> [TLVElement] {
+        (stored.elements ?? []).filter { $0.value[fabricIndexFieldTag]?.uint == UInt64(fabric) }
+    }
+}
+
 /// A cluster backed by stored attribute values, with hooks for writes and closures for commands.
 public actor AttributeCluster: ClusterHandler {
     public typealias CommandHandler = @Sendable (_ cluster: AttributeCluster, _ fields: TLVValue, _ context: AccessContext) async throws -> InvokeResult
@@ -92,9 +126,17 @@ public actor AttributeCluster: ClusterHandler {
         self.definition = definition
         self.featureMap = featureMap
         values = attributes
+        attributeIDs = attributes.keys.sorted()
     }
 
-    public var attributeIDs: [AttributeID] { (Array(values.keys) + Array(readers.keys)).sorted() }
+    /// Kept sorted as attributes are added.
+    public private(set) var attributeIDs: [AttributeID] = []
+
+    private func noteAttribute(_ id: AttributeID) {
+        guard !attributeIDs.contains(id) else { return }
+        attributeIDs.append(id)
+        attributeIDs.sort()
+    }
     public var acceptedCommands: [CommandID] { commands.keys.sorted() }
     public var generatedCommands: [CommandID] {
         Set(commands.keys.compactMap { definition.command($0)?.response }).sorted()
@@ -115,6 +157,7 @@ public actor AttributeCluster: ClusterHandler {
     /// An attribute computed on each read.
     public func provide(_ attribute: AttributeID, _ reader: @escaping @Sendable (AccessContext) async throws -> TLVValue) {
         readers[attribute] = reader
+        noteAttribute(attribute)
     }
 
     public func setFeatureMap(_ featureMap: UInt32) { self.featureMap = featureMap }
@@ -128,6 +171,7 @@ public actor AttributeCluster: ClusterHandler {
         let changed = updates.filter { values[$0.key] != $0.value }
         guard !changed.isEmpty else { return }
         values.merge(changed) { $1 }
+        for id in changed.keys { noteAttribute(id) }
         dataVersion &+= 1
         reporter.report(endpoint, definition.id, Array(changed.keys))
     }
@@ -146,9 +190,8 @@ public actor AttributeCluster: ClusterHandler {
         if let global = await readGlobal(attribute) { return global }
         if let reader = readers[attribute] { return try await reader(context) }
         guard let value = values[attribute] else { throw StatusError(.unsupportedAttribute) }
-        if definition.attribute(attribute)?.flags.contains(.fabricScoped) == true, context.isFabricFiltered,
-           case .array(let entries) = value {
-            return .array(entries.filter { $0.value[fabricIndexFieldTag]?.uint == context.fabricIndex.map(UInt64.init) })
+        if definition.attribute(attribute)?.flags.contains(.fabricScoped) == true {
+            return FabricScopedList.read(value, context: context)
         }
         return value
     }
@@ -157,16 +200,7 @@ public actor AttributeCluster: ClusterHandler {
         guard values[attribute] != nil || readers[attribute] != nil else { throw StatusError(.unsupportedAttribute) }
         var value = value
         if definition.attribute(attribute)?.flags.contains(.fabricScoped) == true {
-            // A fabric-scoped list write replaces only the accessing fabric's entries (Core §7.13.6).
-            guard let fabric = context.fabricIndex, case .array(let written) = value else { throw StatusError(.unsupportedAccess) }
-            let stamped = written.map { entry -> TLVElement in
-                guard case .structure(var fields) = entry.value else { return entry }
-                fields.removeAll { $0.tag == .context(fabricIndexFieldTag) }
-                fields.append(.field(fabricIndexFieldTag, .unsigned(UInt64(fabric))))
-                return TLVElement(entry.tag, .structure(fields))
-            }
-            let others = (values[attribute]?.elements ?? []).filter { $0.value[fabricIndexFieldTag]?.uint != UInt64(fabric) }
-            value = .array(others + stamped)
+            value = try FabricScopedList.merge(value, into: values[attribute] ?? .array([]), context: context)
         }
         if let writeHook { try await writeHook(self, attribute, value, context) }
         if readers[attribute] == nil { set(attribute, value) }

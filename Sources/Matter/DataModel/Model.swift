@@ -149,15 +149,29 @@ public struct EventDefinition: Sendable {
 }
 
 public struct ClusterDefinition: Sendable {
-    public var id: ClusterID
-    public var name: String
-    public var revision: UInt16
-    public var attributes: [AttributeDefinition]
-    public var commands: [CommandDefinition]
-    public var events: [EventDefinition]
+    public let id: ClusterID
+    public let name: String
+    public let revision: UInt16
+    public let attributes: [AttributeDefinition]
+    public let commands: [CommandDefinition]
+    public let events: [EventDefinition]
+    private let attributeIndex: [AttributeID: AttributeDefinition]
+    private let commandIndex: [CommandID: CommandDefinition]
 
-    public func attribute(_ id: AttributeID) -> AttributeDefinition? { attributes.first { $0.id == id } }
-    public func command(_ id: CommandID) -> CommandDefinition? { commands.first { $0.id == id } }
+    public init(id: ClusterID, name: String, revision: UInt16, attributes: [AttributeDefinition], commands: [CommandDefinition],
+                events: [EventDefinition]) {
+        self.id = id
+        self.name = name
+        self.revision = revision
+        self.attributes = attributes
+        self.commands = commands
+        self.events = events
+        attributeIndex = Dictionary(attributes.map { ($0.id, $0) }) { first, _ in first }
+        commandIndex = Dictionary(commands.map { ($0.id, $0) }) { first, _ in first }
+    }
+
+    public func attribute(_ id: AttributeID) -> AttributeDefinition? { attributeIndex[id] }
+    public func command(_ id: CommandID) -> CommandDefinition? { commandIndex[id] }
     public func event(_ id: EventID) -> EventDefinition? { events.first { $0.id == id } }
 }
 

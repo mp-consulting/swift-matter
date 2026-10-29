@@ -11,7 +11,7 @@ public actor InteractionServer: ProtocolHandler {
     /// Subscriptions per fabric; the spec requires at least three (Core §2.11.1).
     public var maxSubscriptionsPerFabric = 10
     /// Multiplies subscription intervals: tests run them at a fraction of their real length.
-    public var timeScale = 1.0
+    public private(set) var timeScale = 1.0
 
     public func setTimeScale(_ scale: Double) { timeScale = scale }
 
@@ -36,7 +36,7 @@ public actor InteractionServer: ProtocolHandler {
             if message.payloadHeader.opcode == IMOpcode.timedRequest.rawValue {
                 let timeout = try TLVStruct(decoding: message.payload).uint(0, as: UInt16.self)
                 timedDeadline = .now + .milliseconds(Int(timeout))
-                try await sendStatus(.success, on: exchange)
+                try await exchange.sendIMStatus(.success)
                 message = try await exchange.receive()
             }
             switch IMOpcode(rawValue: message.payloadHeader.opcode) {
@@ -44,27 +44,20 @@ public actor InteractionServer: ProtocolHandler {
             case .subscribeRequest: try await subscribe(message, on: exchange)
             case .writeRequest: try await write(message, on: exchange, timedDeadline: timedDeadline)
             case .invokeRequest: try await invoke(message, on: exchange, timedDeadline: timedDeadline)
-            default: try await sendStatus(.invalidAction, on: exchange)
+            default: try await exchange.sendIMStatus(.invalidAction)
             }
         } catch let status as StatusError {
-            try? await sendStatus(status.status, on: exchange)
+            try? await exchange.sendIMStatus(status.status)
         } catch let status as IMStatus {
-            try? await sendStatus(status, on: exchange)
+            try? await exchange.sendIMStatus(status)
         } catch {
             logger.debug("Interaction with \(exchange.initialSession.peerAddress) failed: \(error)")
         }
     }
 
-    func sendStatus(_ status: IMStatus, on exchange: Exchange) async throws {
-        try await exchange.send(IMOpcode.statusResponse.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .unsigned(UInt64(status.rawValue))), .field(interactionModelRevisionTag, imRevision),
-        ])))
-    }
-
-    var imRevision: TLVValue { .unsigned(UInt64(SpecificationVersion.interactionModelRevision)) }
-
     // MARK: - Access
 
+    /// The session's privilege on an endpoint's cluster; checked once per cluster, then compared per attribute.
     private func privilege(_ session: SessionInfo, _ endpoint: EndpointNumber, _ cluster: ClusterID) async -> Privilege? {
         let deviceTypes = await dataModel.endpoint(endpoint)?.deviceTypes.map(\.id) ?? []
         return await accessControl.privilege(of: session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes)
@@ -106,66 +99,103 @@ public actor InteractionServer: ProtocolHandler {
     }
 
     /// The reports of attribute paths (Core §8.4.3.2): concrete paths report errors, wildcards skip what they cannot read.
+    /// With `only`, just those attributes are reported (a subscription's changes).
     func attributeReports(_ paths: [AttributePath], session: SessionInfo, fabricFiltered: Bool,
                           filters: [DataVersionFilter] = [], only: Set<ConcreteAttribute>? = nil) async -> [AttributeReport] {
         var reports: [AttributeReport] = []
         let context = AccessContext(session: session, isFabricFiltered: fabricFiltered)
         var seen = Set<ConcreteAttribute>()
+
+        func filtered(_ endpoint: EndpointNumber, _ cluster: ClusterID, _ version: UInt32) -> Bool {
+            filters.contains { $0.endpoint == endpoint && $0.cluster == cluster && $0.version == version }
+        }
+
         for path in paths {
-            if path.isConcrete, let endpoint = path.endpoint, let clusterID = path.cluster, let attribute = path.attribute {
-                if let only, !only.contains(ConcreteAttribute(endpoint, clusterID, attribute)) { continue }
+            if let endpoint = path.endpoint, let clusterID = path.cluster, let attribute = path.attribute {
                 guard await dataModel.endpoint(endpoint) != nil else {
-                    reports.append(.status(path: path, StatusError(.unsupportedEndpoint))); continue
+                    if only == nil { reports.append(.status(path: path, StatusError(.unsupportedEndpoint))) }
+                    continue
                 }
                 guard let cluster = await dataModel.cluster(clusterID, on: endpoint) else {
-                    reports.append(.status(path: path, StatusError(.unsupportedCluster))); continue
-                }
-                let required = cluster.definition.attribute(attribute)?.read ?? .view
-                guard await allowed(session, endpoint, clusterID, required) else {
-                    reports.append(.status(path: path, StatusError(.unsupportedAccess))); continue
+                    if only == nil { reports.append(.status(path: path, StatusError(.unsupportedCluster))) }
+                    continue
                 }
                 let version = await cluster.dataVersion
-                if filters.contains(where: { $0.endpoint == endpoint && $0.cluster == clusterID && $0.version == version }) { continue }
-                guard seen.insert(ConcreteAttribute(endpoint, clusterID, attribute)).inserted else { continue }
-                do {
-                    let value = try await cluster.read(attribute, context: context)
-                    reports.append(.data(path: AttributePath(endpoint: endpoint, cluster: clusterID, attribute: attribute),
-                                         dataVersion: version, value: value))
-                } catch {
-                    reports.append(.status(path: path, error as? StatusError ?? StatusError(.failure)))
+                if filtered(endpoint, clusterID, version) { continue }
+                let privilege = await privilege(session, endpoint, clusterID)
+                if let report = await collect(cluster, endpoint, attribute, version: version, privilege: privilege, context: context,
+                                              only: only, seen: &seen, requested: only == nil ? path : nil) {
+                    reports.append(report)
                 }
                 continue
             }
-            for (endpoint, cluster) in await dataModel.clusters(endpoint: path.endpoint, cluster: path.cluster) {
-                let clusterID = cluster.id
-                guard await allowed(session, endpoint, clusterID, .view) else { continue }
+            // Changes name their clusters: a subscription's wildcard paths need not walk the whole node.
+            let targets: [(EndpointNumber, any ClusterHandler)]
+            if let only {
+                var clusters: [(EndpointNumber, any ClusterHandler)] = []
+                for key in Set(only.map { ConcreteCluster(endpoint: $0.endpoint, cluster: $0.cluster) })
+                    where (path.endpoint ?? key.endpoint) == key.endpoint && (path.cluster ?? key.cluster) == key.cluster {
+                    if let cluster = await dataModel.cluster(key.cluster, on: key.endpoint) { clusters.append((key.endpoint, cluster)) }
+                }
+                targets = clusters
+            } else {
+                targets = await dataModel.clusters(endpoint: path.endpoint, cluster: path.cluster)
+            }
+            for (endpoint, cluster) in targets {
+                let privilege = await privilege(session, endpoint, cluster.id)
+                guard privilege?.grants(.view) == true else { continue }
                 let version = await cluster.dataVersion
-                if filters.contains(where: { $0.endpoint == endpoint && $0.cluster == clusterID && $0.version == version }) { continue }
+                if filtered(endpoint, cluster.id, version) { continue }
                 let ids: [AttributeID]
                 if let attribute = path.attribute { ids = [attribute] } else { ids = await cluster.attributeIDs + GlobalAttribute.all }
                 for attribute in ids {
-                    let concrete = ConcreteAttribute(endpoint, clusterID, attribute)
-                    if let only, !only.contains(concrete) { continue }
-                    let required = cluster.definition.attribute(attribute)?.read ?? .view
-                    guard seen.insert(concrete).inserted, await allowed(session, endpoint, clusterID, required),
-                          let value = try? await cluster.read(attribute, context: context)
-                    else { continue }
-                    reports.append(.data(path: AttributePath(endpoint: endpoint, cluster: clusterID, attribute: attribute),
-                                         dataVersion: version, value: value))
+                    if let report = await collect(cluster, endpoint, attribute, version: version, privilege: privilege, context: context,
+                                                  only: only, seen: &seen, requested: nil) {
+                        reports.append(report)
+                    }
                 }
             }
         }
         return reports
     }
 
+    /// Reads an attribute once per request; errors are reported only for concrete paths (`requested`).
+    private func collect(_ cluster: any ClusterHandler, _ endpoint: EndpointNumber, _ attribute: AttributeID, version: UInt32,
+                         privilege: Privilege?, context: AccessContext, only: Set<ConcreteAttribute>?,
+                         seen: inout Set<ConcreteAttribute>, requested: AttributePath?) async -> AttributeReport? {
+        let concrete = ConcreteAttribute(endpoint, cluster.id, attribute)
+        guard only?.contains(concrete) ?? true, !seen.contains(concrete) else { return nil }
+        let report = await readAttribute(cluster, endpoint, attribute, version: version, privilege: privilege, context: context)
+        if case .data = report { seen.insert(concrete) }
+        if case .status(_, let status) = report { return requested.map { .status(path: $0, status) } }
+        return report
+    }
+
+    /// One attribute's value, or the status that keeps it from being read.
+    private func readAttribute(_ cluster: any ClusterHandler, _ endpoint: EndpointNumber, _ attribute: AttributeID, version: UInt32,
+                               privilege: Privilege?, context: AccessContext) async -> AttributeReport {
+        let path = AttributePath(endpoint: endpoint, cluster: cluster.id, attribute: attribute)
+        guard privilege?.grants(cluster.definition.attribute(attribute)?.read ?? .view) == true else {
+            return .status(path: path, StatusError(.unsupportedAccess))
+        }
+        do {
+            return .data(path: path, dataVersion: version, value: try await cluster.read(attribute, context: context))
+        } catch {
+            return .status(path: path, error as? StatusError ?? StatusError(.failure))
+        }
+    }
+
     func eventReports(_ paths: [EventPath], session: SessionInfo, minimum: UInt64, only: [EventRecord]? = nil) async -> [EventReport] {
         guard !paths.isEmpty else { return [] }
         var reports: [EventReport] = []
         let records: [EventRecord]
-        if let only { records = only } else { records = await dataModel.events(endpoint: nil, cluster: nil, event: nil, minimumNumber: minimum) }
+        if let only { records = only } else { records = await dataModel.events(from: minimum) }
+        var privileges: [ConcreteCluster: Privilege?] = [:]
         for record in records where paths.contains(where: { $0.matches(record) }) {
+            let key = ConcreteCluster(endpoint: record.endpoint, cluster: record.cluster)
+            if privileges[key] == nil { privileges[key] = .some(await privilege(session, record.endpoint, record.cluster)) }
             let required = await dataModel.cluster(record.cluster, on: record.endpoint)?.definition.event(record.event)?.read ?? .view
-            guard await allowed(session, record.endpoint, record.cluster, required) else { continue }
+            guard privileges[key]??.grants(required) == true else { continue }
             // Fabric-sensitive events are only shown to their fabric.
             if let fabric = record.fabricIndex, fabric != session.fabricIndex { continue }
             reports.append(.data(record))
@@ -179,42 +209,40 @@ public actor InteractionServer: ProtocolHandler {
     /// last waits for a StatusResponse, and so does the last when `finalNeedsResponse` (subscriptions).
     func sendReports(_ attributes: [AttributeReport], _ events: [EventReport], subscriptionID: UInt32?, on exchange: Exchange,
                      finalNeedsResponse: Bool) async throws {
-        var pendingAttributes = attributes.flatMap { split($0) }.map { TLVElement($0.tlv) }
-        var pendingEvents = events.map { TLVElement($0.tlv) }
+        // Each report is encoded once; chunks are filled by their encoded sizes.
+        let attributeElements = attributes.flatMap { split($0) }.map { TLVElement($0.tlv) }
+        let eventElements = events.map { TLVElement($0.tlv) }
+        let items = attributeElements.map { (isEvent: false, element: $0, size: TLVEncoder.encode($0).count) }
+            + eventElements.map { (isEvent: true, element: $0, size: TLVEncoder.encode($0).count) }
+        // Room for the message's own fields: subscription id, array headers, flags and the revision.
+        let budget = payloadLimit - 24
+        var index = 0
         repeat {
             var chunkAttributes: [TLVElement] = []
             var chunkEvents: [TLVElement] = []
-            func payload(more: Bool) -> [UInt8] {
-                var fields: [TLVElement] = []
-                if let subscriptionID { fields.append(.field(0, .unsigned(UInt64(subscriptionID)))) }
-                if !chunkAttributes.isEmpty { fields.append(.field(1, .array(chunkAttributes))) }
-                if !chunkEvents.isEmpty { fields.append(.field(2, .array(chunkEvents))) }
-                if more { fields.append(.field(3, .bool(true))) }
-                if !more && !finalNeedsResponse { fields.append(.field(4, .bool(true))) }
-                fields.append(.field(interactionModelRevisionTag, imRevision))
-                return TLVEncoder.encode(.structure(fields))
+            var size = 0
+            while index < items.count, chunkAttributes.isEmpty && chunkEvents.isEmpty || size + items[index].size <= budget {
+                let item = items[index]
+                if item.isEvent { chunkEvents.append(item.element) } else { chunkAttributes.append(item.element) }
+                size += item.size
+                index += 1
             }
-            // Fill the chunk greedily; one oversized report still goes out alone.
-            while let next = pendingAttributes.first {
-                chunkAttributes.append(next)
-                if payload(more: true).count > payloadLimit && chunkAttributes.count > 1 { chunkAttributes.removeLast(); break }
-                pendingAttributes.removeFirst()
-            }
-            while pendingAttributes.isEmpty, let next = pendingEvents.first {
-                chunkEvents.append(next)
-                if payload(more: true).count > payloadLimit && (chunkEvents.count > 1 || !chunkAttributes.isEmpty) {
-                    chunkEvents.removeLast(); break
-                }
-                pendingEvents.removeFirst()
-            }
-            let more = !pendingAttributes.isEmpty || !pendingEvents.isEmpty
-            try await exchange.send(IMOpcode.reportData.rawValue, payload(more: more))
+            let more = index < items.count
+            var fields: [TLVElement] = []
+            if let subscriptionID { fields.append(.field(0, .unsigned(UInt64(subscriptionID)))) }
+            if !chunkAttributes.isEmpty { fields.append(.field(1, .array(chunkAttributes))) }
+            if !chunkEvents.isEmpty { fields.append(.field(2, .array(chunkEvents))) }
+            if more { fields.append(.field(3, .bool(true))) }
+            if !more && !finalNeedsResponse { fields.append(.field(4, .bool(true))) }
+            fields.append(interactionModelRevisionField)
+            try await exchange.send(IMOpcode.reportData.rawValue, TLVEncoder.encode(.structure(fields)))
             if more || finalNeedsResponse { try await expectStatusResponse(on: exchange) }
-        } while !pendingAttributes.isEmpty || !pendingEvents.isEmpty
+        } while index < items.count
     }
 
     /// A list too large for one message goes as an empty list and then one append per entry (Core §10.6.4.3.1).
     private func split(_ report: AttributeReport) -> [AttributeReport] {
+        // Only lists can be split, so only they are measured.
         guard case .data(let path, let version, .array(let entries)) = report,
               TLVEncoder.encode(report.tlv).count > payloadLimit - 64
         else { return [report] }
@@ -225,10 +253,8 @@ public actor InteractionServer: ProtocolHandler {
     }
 
     func expectStatusResponse(on exchange: Exchange) async throws {
-        let response = try await exchange.receive()
-        guard response.payloadHeader.opcode == IMOpcode.statusResponse.rawValue,
-              try TLVStruct(decoding: response.payload).uint(0) == UInt64(IMStatus.success.rawValue)
-        else { throw StatusError(.invalidAction) }
+        guard let status = try StatusError(statusResponse: try await exchange.receive()) else { throw StatusError(.invalidAction) }
+        guard status.status == .success else { throw status }
     }
 
     // MARK: - Write
@@ -251,7 +277,7 @@ public actor InteractionServer: ProtocolHandler {
             let more = fields[3]?.bool ?? false
             if fields[0]?.bool != true || more {
                 try await exchange.send(IMOpcode.writeResponse.rawValue, TLVEncoder.encode(.structure([
-                    .field(0, .array(statuses)), .field(interactionModelRevisionTag, imRevision),
+                    .field(0, .array(statuses)), interactionModelRevisionField,
                 ])))
             }
             guard more else { return }
@@ -329,7 +355,7 @@ public actor InteractionServer: ProtocolHandler {
         }
         if fields[0]?.bool == true { return } // SuppressResponse
         try await exchange.send(IMOpcode.invokeResponse.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .bool(false)), .field(1, .array(responses)), .field(interactionModelRevisionTag, imRevision),
+            .field(0, .bool(false)), .field(1, .array(responses)), interactionModelRevisionField,
         ])))
     }
 
@@ -376,12 +402,11 @@ public actor InteractionServer: ProtocolHandler {
         let events = await eventReports(spec.events, session: session, minimum: spec.eventMinimum)
         try await sendReports(attributes, events, subscriptionID: id, on: exchange, finalNeedsResponse: true)
         try await exchange.send(IMOpcode.subscribeResponse.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .unsigned(UInt64(id))), .field(2, .unsigned(UInt64(maxInterval))), .field(interactionModelRevisionTag, imRevision),
+            .field(0, .unsigned(UInt64(id))), .field(2, .unsigned(UInt64(maxInterval))), interactionModelRevisionField,
         ])))
 
         let subscription = Subscription(id: id, session: session, spec: spec, minInterval: .seconds(Int(floor)) * timeScale,
                                         maxInterval: .seconds(Int(maxInterval)) * timeScale, server: self,
-                                        reportedClusters: Set(attributes.compactMap(\.cluster)),
                                         eventMinimum: max(spec.eventMinimum, await dataModel.eventNumber))
         subscriptions[id] = subscription
         await subscription.start(layer: exchange.layer)

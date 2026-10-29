@@ -203,3 +203,35 @@ struct AccessControlTests {
         #expect(throws: StatusError(.constraintError)) { try AccessControlEntry(tlv: pase) }
     }
 }
+
+struct FabricScopedListTests {
+    func context(fabric: FabricIndex, filtered: Bool = true) -> AccessContext {
+        AccessContext(session: SessionInfo(kind: .case, localSessionID: 1, peerSessionID: 1, fabricIndex: fabric, peerAddress: .memory("p")),
+                      isFabricFiltered: filtered)
+    }
+
+    @Test func isolatesFabrics() async throws {
+        let binding = AttributeCluster(BindingCluster.definition, attributes: [BindingCluster.Attribute.binding: .array([])])
+        let entry = TLVValue.structure([.field(1, .unsigned(42)), .field(fabricIndexFieldTag, .unsigned(9))])
+        try await binding.write(BindingCluster.Attribute.binding, value: .array([TLVElement(entry)]), context: context(fabric: 1))
+        try await binding.write(BindingCluster.Attribute.binding, value: .array([TLVElement(entry)]), context: context(fabric: 2))
+
+        // The written FabricIndex is replaced by the writer's.
+        let own = try await binding.read(BindingCluster.Attribute.binding, context: context(fabric: 1))
+        #expect(own.elements?.map { $0.value[fabricIndexFieldTag] } == [.unsigned(1)])
+        #expect(own.elements?.first?.value[1] == .unsigned(42))
+
+        // Unfiltered, another fabric's entry shows only its FabricIndex.
+        let unfiltered = try await binding.read(BindingCluster.Attribute.binding, context: context(fabric: 1, filtered: false))
+        #expect(unfiltered.elements?.count == 2)
+        #expect(unfiltered.elements?.last?.value == .structure([.field(fabricIndexFieldTag, .unsigned(2))]))
+
+        // Clearing fabric 1's list leaves fabric 2's entry.
+        try await binding.write(BindingCluster.Attribute.binding, value: .array([]), context: context(fabric: 1))
+        #expect(try await binding.read(BindingCluster.Attribute.binding, context: context(fabric: 2)).elements?.count == 1)
+
+        await #expect(throws: StatusError(.constraintError)) {
+            try await binding.write(BindingCluster.Attribute.binding, value: .array([TLVElement(.unsigned(1))]), context: context(fabric: 1))
+        }
+    }
+}

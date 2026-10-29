@@ -11,6 +11,20 @@ public actor InteractionClient: ProtocolHandler {
         public var events: [EventReport]
     }
 
+    /// Runs one interaction on a new exchange, closing it afterwards.
+    private func interact<T: Sendable>(session: UInt16, timed: Duration? = nil, _ body: (Exchange) async throws -> T) async throws -> T {
+        let exchange = try await layer.newExchange(session: session, protocolID: .interactionModel)
+        do {
+            if let timed { try await timedRequest(timed, on: exchange) }
+            let result = try await body(exchange)
+            await exchange.close()
+            return result
+        } catch {
+            await exchange.close()
+            throw error
+        }
+    }
+
     // MARK: - Read
 
     public func read(_ attributes: [AttributePath], events: [EventPath] = [], fabricFiltered: Bool = true,
@@ -18,12 +32,11 @@ public actor InteractionClient: ProtocolHandler {
         var fields: [TLVElement] = []
         if !attributes.isEmpty { fields.append(.field(0, .array(attributes.map { TLVElement($0.tlv) }))) }
         if !events.isEmpty { fields.append(.field(1, .array(events.map { TLVElement($0.tlv) }))) }
-        fields.append(.field(3, .bool(fabricFiltered)))
-        fields.append(.field(interactionModelRevisionTag, .unsigned(UInt64(SpecificationVersion.interactionModelRevision))))
-        let exchange = try await layer.newExchange(session: session, protocolID: .interactionModel)
-        defer { Task { await exchange.close() } }
-        try await exchange.send(IMOpcode.readRequest.rawValue, TLVEncoder.encode(.structure(fields)))
-        let report = try await receiveReports(on: exchange, subscription: false)
+        fields += [.field(3, .bool(fabricFiltered)), interactionModelRevisionField]
+        let report = try await interact(session: session) { exchange in
+            try await exchange.send(IMOpcode.readRequest.rawValue, TLVEncoder.encode(.structure(fields)))
+            return try await receiveReports(on: exchange)
+        }
         return (report.attributes, report.events)
     }
 
@@ -48,94 +61,78 @@ public actor InteractionClient: ProtocolHandler {
     }
 
     /// Collects ReportData chunks, acknowledging each but a final one that suppresses its response.
-    private func receiveReports(on exchange: Exchange, subscription: Bool) async throws -> SubscriptionReport {
-        var attributes: [AttributeReport] = []
-        var events: [EventReport] = []
+    private func receiveReports(on exchange: Exchange, first: ReportDataContents? = nil) async throws -> SubscriptionReport {
+        var report = SubscriptionReport(attributes: [], events: [])
+        var next = first
         while true {
-            let message = try await exchange.receive()
-            if message.payloadHeader.opcode == IMOpcode.statusResponse.rawValue {
-                let status = try TLVStruct(decoding: message.payload).uint(0, as: UInt8.self)
-                throw StatusError(IMStatus(rawValue: status) ?? .failure)
+            let contents: ReportDataContents
+            if let pending = next {
+                contents = pending
+                next = nil
+            } else {
+                let message = try await exchange.receive()
+                if let status = try StatusError(statusResponse: message) { throw status }
+                guard message.payloadHeader.opcode == IMOpcode.reportData.rawValue else { throw StatusError(.invalidAction) }
+                contents = try ReportDataContents(message.payload)
             }
-            guard message.payloadHeader.opcode == IMOpcode.reportData.rawValue else { throw StatusError(.invalidAction) }
-            let fields = try TLVStruct(decoding: message.payload)
-            attributes += try (fields[1]?.elements ?? []).map { try AttributeReport(tlv: $0.value) }
-            events += try (fields[2]?.elements ?? []).map { try EventReport(tlv: $0.value) }
-            let more = fields[3]?.bool ?? false
-            if more || fields[4]?.bool != true { try await Self.sendStatus(.success, on: exchange) }
-            if !more { return SubscriptionReport(attributes: attributes, events: events) }
+            report.attributes += contents.attributes
+            report.events += contents.events
+            if contents.moreChunks || !contents.suppressResponse { try await exchange.sendIMStatus(.success) }
+            if !contents.moreChunks { return report }
         }
-    }
-
-    static func sendStatus(_ status: IMStatus, on exchange: Exchange) async throws {
-        try await exchange.send(IMOpcode.statusResponse.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .unsigned(UInt64(status.rawValue))),
-            .field(interactionModelRevisionTag, .unsigned(UInt64(SpecificationVersion.interactionModelRevision))),
-        ])))
     }
 
     // MARK: - Write
 
     /// Writes attributes, returning each path's status.
     public func write(_ values: [(AttributePath, TLVValue)], timed: Duration? = nil, session: UInt16) async throws -> [(AttributePath, StatusError)] {
-        let exchange = try await layer.newExchange(session: session, protocolID: .interactionModel)
-        defer { Task { await exchange.close() } }
-        if let timed { try await timedRequest(timed, on: exchange) }
         let requests = values.map { path, value in TLVElement(.structure([.field(1, path.tlv), TLVElement(.context(2), value)])) }
-        try await exchange.send(IMOpcode.writeRequest.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .bool(false)), .field(1, .bool(timed != nil)), .field(2, .array(requests)),
-            .field(interactionModelRevisionTag, .unsigned(UInt64(SpecificationVersion.interactionModelRevision))),
-        ])))
-        let response = try await exchange.receive()
-        if response.payloadHeader.opcode == IMOpcode.statusResponse.rawValue {
-            throw StatusError(IMStatus(rawValue: try TLVStruct(decoding: response.payload).uint(0, as: UInt8.self)) ?? .failure)
-        }
-        return try TLVStruct(decoding: response.payload).elements(0).map { element in
-            let fields = try TLVStruct(element.value)
-            guard let path = fields[0], let status = fields[1] else { throw StatusError(.invalidAction) }
-            return (try AttributePath(tlv: path), try StatusError(tlv: status))
+        return try await interact(session: session, timed: timed) { exchange in
+            try await exchange.send(IMOpcode.writeRequest.rawValue, TLVEncoder.encode(.structure([
+                .field(0, .bool(false)), .field(1, .bool(timed != nil)), .field(2, .array(requests)), interactionModelRevisionField,
+            ])))
+            let response = try await exchange.receive()
+            if let status = try StatusError(statusResponse: response) { throw status }
+            return try TLVStruct(decoding: response.payload).elements(0).map { element in
+                let fields = try TLVStruct(element.value)
+                guard let path = fields[0], let status = fields[1] else { throw StatusError(.invalidAction) }
+                return (try AttributePath(tlv: path), try StatusError(tlv: status))
+            }
         }
     }
 
     private func timedRequest(_ timeout: Duration, on exchange: Exchange) async throws {
         try await exchange.send(IMOpcode.timedRequest.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .unsigned(UInt64(max(1, min(timeout.milliseconds, 65_535))))),
-            .field(interactionModelRevisionTag, .unsigned(UInt64(SpecificationVersion.interactionModelRevision))),
+            .field(0, .unsigned(UInt64(max(1, min(timeout.milliseconds, 65_535))))), interactionModelRevisionField,
         ])))
-        let status = try await exchange.receive()
-        guard status.payloadHeader.opcode == IMOpcode.statusResponse.rawValue,
-              try TLVStruct(decoding: status.payload).uint(0) == 0
-        else { throw StatusError(.timedRequestMismatch) }
+        guard try StatusError(statusResponse: try await exchange.receive())?.status == .success else {
+            throw StatusError(.timedRequestMismatch)
+        }
     }
 
     // MARK: - Invoke
 
     public func invoke(_ path: CommandPath, fields: TLVValue = .structure([]), timed: Duration? = nil, session: UInt16) async throws -> InvokeResult {
-        let exchange = try await layer.newExchange(session: session, protocolID: .interactionModel)
-        defer { Task { await exchange.close() } }
-        if let timed { try await timedRequest(timed, on: exchange) }
-        try await exchange.send(IMOpcode.invokeRequest.rawValue, TLVEncoder.encode(.structure([
-            .field(0, .bool(false)), .field(1, .bool(timed != nil)),
-            .field(2, .array([TLVElement(.structure([.field(0, path.tlv), TLVElement(.context(1), fields)]))])),
-            .field(interactionModelRevisionTag, .unsigned(UInt64(SpecificationVersion.interactionModelRevision))),
-        ])))
-        let response = try await exchange.receive()
-        let payload = try TLVStruct(decoding: response.payload)
-        if response.payloadHeader.opcode == IMOpcode.statusResponse.rawValue {
-            return .status(StatusError(IMStatus(rawValue: try payload.uint(0, as: UInt8.self)) ?? .failure))
+        try await interact(session: session, timed: timed) { exchange in
+            try await exchange.send(IMOpcode.invokeRequest.rawValue, TLVEncoder.encode(.structure([
+                .field(0, .bool(false)), .field(1, .bool(timed != nil)),
+                .field(2, .array([TLVElement(.structure([.field(0, path.tlv), TLVElement(.context(1), fields)]))])),
+                interactionModelRevisionField,
+            ])))
+            let response = try await exchange.receive()
+            if let status = try StatusError(statusResponse: response) { return .status(status) }
+            guard response.payloadHeader.opcode == IMOpcode.invokeResponse.rawValue,
+                  let first = try TLVStruct(decoding: response.payload).elements(1).first
+            else { throw StatusError(.invalidAction) }
+            let item = try TLVStruct(first.value)
+            if let command = item[0] {
+                let data = try TLVStruct(command)
+                guard let pathValue = data[0] else { throw StatusError(.invalidAction) }
+                return .response(try CommandPath(tlv: pathValue).command, data[1] ?? .structure([]))
+            }
+            guard let status = try item.structure(1)[1] else { throw StatusError(.invalidAction) }
+            return .status(try StatusError(tlv: status))
         }
-        guard response.payloadHeader.opcode == IMOpcode.invokeResponse.rawValue, let first = try payload.elements(1).first else {
-            throw StatusError(.invalidAction)
-        }
-        let item = try TLVStruct(first.value)
-        if let command = item[0] {
-            let data = try TLVStruct(command)
-            guard let pathValue = data[0] else { throw StatusError(.invalidAction) }
-            return .response(try CommandPath(tlv: pathValue).command, data[1] ?? .structure([]))
-        }
-        let status = try item.structure(1)
-        guard let statusValue = status[1] else { throw StatusError(.invalidAction) }
-        return .status(try StatusError(tlv: statusValue))
     }
 
     // MARK: - Subscribe
@@ -148,21 +145,20 @@ public actor InteractionClient: ProtocolHandler {
         ]
         if !attributes.isEmpty { fields.append(.field(3, .array(attributes.map { TLVElement($0.tlv) }))) }
         if !events.isEmpty { fields.append(.field(4, .array(events.map { TLVElement($0.tlv) }))) }
-        fields.append(.field(7, .bool(true)))
-        fields.append(.field(interactionModelRevisionTag, .unsigned(UInt64(SpecificationVersion.interactionModelRevision))))
+        fields += [.field(7, .bool(true)), interactionModelRevisionField]
 
-        let exchange = try await layer.newExchange(session: session, protocolID: .interactionModel)
-        defer { Task { await exchange.close() } }
-        try await exchange.send(IMOpcode.subscribeRequest.rawValue, TLVEncoder.encode(.structure(fields)))
-        let priming = try await receiveReports(on: exchange, subscription: true)
-        let response = try await exchange.receive()
-        guard response.payloadHeader.opcode == IMOpcode.subscribeResponse.rawValue else { throw StatusError(.invalidAction) }
-        let responseFields = try TLVStruct(decoding: response.payload)
-        let id = try responseFields.uint(0, as: UInt32.self)
+        let (priming, id, negotiated) = try await interact(session: session) { exchange in
+            try await exchange.send(IMOpcode.subscribeRequest.rawValue, TLVEncoder.encode(.structure(fields)))
+            let priming = try await receiveReports(on: exchange)
+            let response = try await exchange.receive()
+            guard response.payloadHeader.opcode == IMOpcode.subscribeResponse.rawValue else { throw StatusError(.invalidAction) }
+            let responseFields = try TLVStruct(decoding: response.payload)
+            return (priming, try responseFields.uint(0, as: UInt32.self), try responseFields.uint(2, as: UInt16.self))
+        }
         let (stream, continuation) = AsyncStream.makeStream(of: SubscriptionReport.self)
         continuation.yield(priming)
         subscriptions[id] = continuation
-        return (id, try responseFields.uint(2, as: UInt16.self), stream)
+        return (id, negotiated, stream)
     }
 
     public func cancelSubscription(_ id: UInt32) {
@@ -176,24 +172,13 @@ public actor InteractionClient: ProtocolHandler {
 
     private func receiveSubscriptionReport(_ exchange: Exchange, first message: Message) async {
         guard message.payloadHeader.opcode == IMOpcode.reportData.rawValue,
-              let fields = try? TLVStruct(decoding: message.payload), let id = fields[0]?.uint.flatMap(UInt32.init(exactly:)),
+              let contents = try? ReportDataContents(message.payload), let id = contents.subscriptionID,
               let continuation = subscriptions[id]
         else {
-            try? await Self.sendStatus(.invalidSubscription, on: exchange)
+            try? await exchange.sendIMStatus(.invalidSubscription)
             return
         }
-        var report = SubscriptionReport(
-            attributes: (try? (fields[1]?.elements ?? []).map { try AttributeReport(tlv: $0.value) }) ?? [],
-            events: (try? (fields[2]?.elements ?? []).map { try EventReport(tlv: $0.value) }) ?? [])
-        if fields[3]?.bool == true {
-            // A chunked report: acknowledge and collect the rest on the same exchange.
-            try? await Self.sendStatus(.success, on: exchange)
-            guard let rest = try? await receiveReports(on: exchange, subscription: true) else { return }
-            report.attributes += rest.attributes
-            report.events += rest.events
-        } else {
-            try? await Self.sendStatus(.success, on: exchange)
-        }
+        guard let report = try? await receiveReports(on: exchange, first: contents) else { return }
         continuation.yield(report)
     }
 }

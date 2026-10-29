@@ -16,6 +16,44 @@ public enum IMOpcode: UInt8, Sendable {
 
 /// The InteractionModelRevision field every action carries (tag 0xFF).
 let interactionModelRevisionTag: UInt8 = 0xFF
+let interactionModelRevisionField = TLVElement.field(interactionModelRevisionTag,
+                                                    .unsigned(UInt64(SpecificationVersion.interactionModelRevision)))
+
+extension Exchange {
+    /// Sends a StatusResponse (Core §10.7.1).
+    func sendIMStatus(_ status: IMStatus) async throws {
+        try await send(IMOpcode.statusResponse.rawValue, TLVEncoder.encode(.structure([
+            .field(0, .unsigned(UInt64(status.rawValue))), interactionModelRevisionField,
+        ])))
+    }
+}
+
+extension StatusError {
+    /// The status of a StatusResponse message, or nil when the message is something else.
+    init?(statusResponse message: Message) throws {
+        guard message.payloadHeader.opcode == IMOpcode.statusResponse.rawValue else { return nil }
+        let code = try TLVStruct(decoding: message.payload).uint(0, as: UInt8.self)
+        self.init(IMStatus(rawValue: code) ?? .failure)
+    }
+}
+
+/// The reports of one ReportData message (Core §10.7.3).
+struct ReportDataContents {
+    var attributes: [AttributeReport]
+    var events: [EventReport]
+    var subscriptionID: UInt32?
+    var moreChunks: Bool
+    var suppressResponse: Bool
+
+    init(_ payload: [UInt8]) throws {
+        let fields = try TLVStruct(decoding: payload)
+        subscriptionID = fields[0]?.uint.flatMap(UInt32.init(exactly:))
+        attributes = try (fields[1]?.elements ?? []).map { try AttributeReport(tlv: $0.value) }
+        events = try (fields[2]?.elements ?? []).map { try EventReport(tlv: $0.value) }
+        moreChunks = fields[3]?.bool ?? false
+        suppressResponse = fields[4]?.bool ?? false
+    }
+}
 
 /// An attribute path; nil fields are wildcards (AttributePathIB, Core §10.6.2).
 public struct AttributePath: Hashable, Sendable, CustomStringConvertible {
@@ -57,8 +95,8 @@ public struct AttributePath: Hashable, Sendable, CustomStringConvertible {
     }
 
     init(tlv value: TLVValue) throws {
-        guard case .list(let elements) = value else { throw StatusError(.invalidAction) }
-        func field(_ tag: UInt8) -> TLVValue? { elements.first { $0.tag == .context(tag) }?.value }
+        guard case .list = value else { throw StatusError(.invalidAction) }
+        func field(_ tag: UInt8) -> TLVValue? { value[tag] }
         // A node id (tag 1) other than this node's is not supported; wildcard paths carry none.
         endpoint = try field(2).map { try narrow($0) }
         cluster = try field(3).map { try narrow($0) }
@@ -93,8 +131,8 @@ public struct CommandPath: Hashable, Sendable {
     }
 
     init(tlv value: TLVValue) throws {
-        guard case .list(let elements) = value else { throw StatusError(.invalidAction) }
-        func field(_ tag: UInt8) -> TLVValue? { elements.first { $0.tag == .context(tag) }?.value }
+        guard case .list = value else { throw StatusError(.invalidAction) }
+        func field(_ tag: UInt8) -> TLVValue? { value[tag] }
         endpoint = try field(0).map { try narrow($0) }
         guard let cluster = field(1), let command = field(2) else { throw StatusError(.invalidAction) }
         self.cluster = try narrow(cluster)
@@ -131,8 +169,8 @@ public struct EventPath: Hashable, Sendable {
     }
 
     init(tlv value: TLVValue) throws {
-        guard case .list(let elements) = value else { throw StatusError(.invalidAction) }
-        func field(_ tag: UInt8) -> TLVValue? { elements.first { $0.tag == .context(tag) }?.value }
+        guard case .list = value else { throw StatusError(.invalidAction) }
+        func field(_ tag: UInt8) -> TLVValue? { value[tag] }
         endpoint = try field(1).map { try narrow($0) }
         cluster = try field(2).map { try narrow($0) }
         event = try field(3).map { try narrow($0) }
@@ -152,9 +190,9 @@ public struct DataVersionFilter: Hashable, Sendable {
 
     init(tlv value: TLVValue) throws {
         let fields = try TLVStruct(value)
-        guard case .list(let path) = fields[0] ?? .null else { throw StatusError(.invalidAction) }
-        func field(_ tag: UInt8) -> TLVValue? { path.first { $0.tag == .context(tag) }?.value }
-        guard let endpoint = field(1), let cluster = field(2) else { throw StatusError(.invalidAction) }
+        guard let path = fields[0], case .list = path, let endpoint = path[1], let cluster = path[2] else {
+            throw StatusError(.invalidAction)
+        }
         self.endpoint = try narrow(endpoint)
         self.cluster = try narrow(cluster)
         version = try fields.uint(1, as: UInt32.self)
@@ -197,9 +235,8 @@ public enum AttributeReport: Sendable {
             guard let path = data[1], let value = data[2] else { throw TLVError.field(1) }
             self = .data(path: try AttributePath(tlv: path), dataVersion: UInt32(truncatingIfNeeded: (try? data.uint(0)) ?? 0), value: value)
         } else {
-            let status = try fields.structure(0)
-            guard let path = status[0], let statusValue = status[1] else { throw TLVError.field(0) }
-            self = .status(path: try AttributePath(tlv: path), try StatusError(tlv: statusValue))
+            let (path, status) = try statusIB(fields)
+            self = .status(path: try AttributePath(tlv: path), status)
         }
     }
 }
@@ -233,11 +270,17 @@ public enum EventReport: Sendable {
                 priority: EventDefinition.Priority(rawValue: UInt8(truncatingIfNeeded: try data.uint(2))) ?? .info,
                 timestamp: (try? data.uint(3)) ?? 0, data: data[7] ?? .null, fabricIndex: nil))
         } else {
-            let status = try fields.structure(0)
-            guard let path = status[0], let statusValue = status[1] else { throw TLVError.field(0) }
-            self = .status(path: try EventPath(tlv: path), try StatusError(tlv: statusValue))
+            let (path, status) = try statusIB(fields)
+            self = .status(path: try EventPath(tlv: path), status)
         }
     }
+}
+
+/// The path and status of an attribute or event status IB (field 0 of a report).
+private func statusIB(_ fields: TLVStruct) throws -> (TLVValue, StatusError) {
+    let status = try fields.structure(0)
+    guard let path = status[0], let value = status[1] else { throw TLVError.field(0) }
+    return (path, try StatusError(tlv: value))
 }
 
 /// Narrows an unsigned TLV value, rejecting the path when it does not fit.
