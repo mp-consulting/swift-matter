@@ -83,7 +83,7 @@ public struct StatusReport: Hashable, Sendable, Error {
     }
 
     public init(decoding bytes: [UInt8]) throws {
-        var reader = ByteReader(bytes)
+        var reader = ByteReader(bytes, truncated: MessageError.truncated)
         guard let general = GeneralCode(rawValue: try reader.read(UInt16.self)) else { throw MessageError.truncated }
         let protocolID = ProtocolID(rawValue: try reader.read(UInt16.self))
         let vendorID = try reader.read(UInt16.self)

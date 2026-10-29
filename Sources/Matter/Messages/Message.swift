@@ -20,7 +20,6 @@ public enum MessageError: Error, Equatable, Sendable {
     case invalidSessionType
     case authenticationFailed
     case unknownSession(UInt16)
-    case duplicate
     case privacyUnsupported
 }
 
@@ -86,7 +85,7 @@ public struct MessageHeader: Hashable, Sendable {
 
     /// Decodes the header at the start of `bytes`, returning it and its length (extensions included).
     public static func decode(_ bytes: [UInt8]) throws -> (MessageHeader, Int) {
-        var reader = ByteReader(bytes)
+        var reader = ByteReader(bytes, truncated: MessageError.truncated)
         let flags = try reader.read(UInt8.self)
         guard flags >> 4 == 0 else { throw MessageError.unsupportedVersion }
         let sessionID = try reader.read(UInt16.self)
@@ -154,7 +153,7 @@ public struct PayloadHeader: Hashable, Sendable {
     }
 
     public static func decode(_ bytes: [UInt8]) throws -> (PayloadHeader, Int) {
-        var reader = ByteReader(bytes)
+        var reader = ByteReader(bytes, truncated: MessageError.truncated)
         let flags = try reader.read(UInt8.self)
         let opcode = try reader.read(UInt8.self)
         let exchangeID = try reader.read(UInt16.self)
@@ -209,25 +208,5 @@ public struct Message: Sendable {
             throw MessageError.authenticationFailed
         }
         return try Message(header: header, plaintext: plaintext)
-    }
-}
-
-/// Little-endian reading over bytes.
-struct ByteReader {
-    let bytes: [UInt8]
-    private(set) var offset = 0
-
-    init(_ bytes: [UInt8]) { self.bytes = bytes }
-
-    var remaining: Int { bytes.count - offset }
-
-    mutating func take(_ count: Int) throws -> ArraySlice<UInt8> {
-        guard count >= 0, remaining >= count else { throw MessageError.truncated }
-        defer { offset += count }
-        return bytes[offset..<offset + count]
-    }
-
-    mutating func read<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
-        try take(MemoryLayout<T>.size).reversed().reduce(T.zero) { $0 << 8 | T(truncatingIfNeeded: $1) }
     }
 }

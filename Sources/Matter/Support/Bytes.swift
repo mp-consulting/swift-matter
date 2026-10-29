@@ -23,3 +23,27 @@ func zeroPadded(_ value: some BinaryInteger, width: Int, radix: Int = 10) -> Str
     let digits = String(value, radix: radix, uppercase: true)
     return String(repeating: "0", count: max(0, width - digits.count)) + digits
 }
+
+/// Bounds-checked little-endian reading over bytes; running out throws the reader's error.
+struct ByteReader {
+    let bytes: [UInt8]
+    private(set) var offset = 0
+    let truncated: any Error
+
+    init(_ bytes: [UInt8], truncated: any Error) {
+        self.bytes = bytes
+        self.truncated = truncated
+    }
+
+    var remaining: Int { bytes.count - offset }
+
+    mutating func take(_ count: Int) throws -> ArraySlice<UInt8> {
+        guard count >= 0, remaining >= count else { throw truncated }
+        defer { offset += count }
+        return bytes[offset..<offset + count]
+    }
+
+    mutating func read<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
+        try take(MemoryLayout<T>.size).reversed().reduce(T.zero) { $0 << 8 | T(truncatingIfNeeded: $1) }
+    }
+}

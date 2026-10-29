@@ -87,6 +87,7 @@ struct MontgomeryField: Sendable {
     private let rSquared: U256
     /// The Montgomery form of 1 (R mod modulus).
     let one: U256
+    private let modulusLimbs: [UInt64]
 
     init(modulus: U256) {
         self.modulus = modulus
@@ -98,6 +99,7 @@ struct MontgomeryField: Sendable {
         for _ in 0..<256 { value = Self.addMod(value, value, modulus) }
         rSquared = value
         one = U256.zero.subtracting(modulus).0
+        modulusLimbs = modulus.array
     }
 
     private static func addMod(_ a: U256, _ b: U256, _ modulus: U256) -> U256 {
@@ -121,7 +123,7 @@ struct MontgomeryField: Sendable {
     /// a·b·R^-1 mod m (CIOS, in CP256).
     func multiply(_ a: U256, _ b: U256) -> U256 {
         var result = [UInt64](repeating: 0, count: 4)
-        cp256_mont_mul(&result, a.array, b.array, modulus.array, inverse)
+        cp256_mont_mul(&result, a.array, b.array, modulusLimbs, inverse)
         return U256(array: result)
     }
 
@@ -130,14 +132,12 @@ struct MontgomeryField: Sendable {
     func toMontgomery(_ a: U256) -> U256 { multiply(a, rSquared) }
     func fromMontgomery(_ a: U256) -> U256 { multiply(a, .one) }
 
-    /// base^exponent, both the base and the result in Montgomery form; the exponent is public.
+    /// base^exponent modulo p (the curve's field only), both in Montgomery form; the exponent is public.
     func power(_ base: U256, _ exponent: U256) -> U256 {
-        var result = one
-        for index in (0..<256).reversed() {
-            result = square(result)
-            if exponent.bit(index) == 1 { result = multiply(result, base) }
-        }
-        return result
+        precondition(modulus == P256Point.field.modulus, "CP256 exponentiates modulo p only")
+        var result = [UInt64](repeating: 0, count: 4)
+        cp256_fe_pow(&result, base.array, exponent.array)
+        return U256(array: result)
     }
 
     /// a^-1 by Fermat (the modulus is prime), in Montgomery form.

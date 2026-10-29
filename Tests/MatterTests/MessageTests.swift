@@ -89,14 +89,14 @@ struct Pair {
 
     static let passcode: UInt32 = 20202021
 
-    init(reliability: ReliabilityParameters = .fast) async throws {
-        device = MessageLayer(transport: await network.transport(named: "device"), reliability: reliability)
-        controller = MessageLayer(transport: await network.transport(named: "controller"), reliability: reliability)
+    init() async throws {
+        device = MessageLayer(transport: await network.transport(named: "device"), reliability: .fast)
+        controller = MessageLayer(transport: await network.transport(named: "controller"), reliability: .fast)
         let verifier = try PASEVerifier(passcode: Self.passcode)
         let attempts = attempts
         let context = PASE.ResponderContext(verifier: { verifier }, attempted: { await attempts.append($0) })
-        await device.register(SecureChannelServer(layer: device, pase: context), for: .secureChannel)
-        await device.register(EchoHandler(), for: EchoHandler.protocolID)
+        try await device.register(SecureChannelServer(pase: context), for: .secureChannel)
+        try await device.register(EchoHandler(), for: EchoHandler.protocolID)
         try await device.start()
         try await controller.start()
     }

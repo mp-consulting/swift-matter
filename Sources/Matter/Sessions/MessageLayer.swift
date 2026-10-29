@@ -1,3 +1,4 @@
+import Foundation
 import Logging
 
 /// Handles exchanges a peer starts for one protocol.
@@ -11,6 +12,7 @@ public enum ExchangeError: Error, Equatable, Sendable {
     case closed
     case notAcknowledged
     case sessionGone
+    case handlerAlreadyRegistered
 }
 
 /// MRP constants (Core §4.12.8).
@@ -100,16 +102,21 @@ public actor MessageLayer {
 
     public func stop() async {
         handlerTasks.values.forEach { $0.cancel() }
-        for state in exchanges.values {
-            state.ackTask?.cancel()
-            state.retransmission?.task.cancel()
-            await state.exchange.fail(ExchangeError.closed)
-        }
-        exchanges = [:]
+        for key in exchanges.keys { await tearDown(key, error: .closed) }
         await transport.close()
     }
 
-    public func register(_ handler: any ProtocolHandler, for protocolID: ProtocolID) {
+    /// Cancels an exchange's timers, forgets it and fails its pending receive.
+    private func tearDown(_ key: ExchangeKey, error: ExchangeError) async {
+        guard let state = exchanges.removeValue(forKey: key) else { return }
+        state.ackTask?.cancel()
+        state.retransmission?.task.cancel()
+        await state.exchange.fail(error)
+    }
+
+    /// Registers the handler of a protocol's unsolicited messages; one per protocol.
+    public func register(_ handler: any ProtocolHandler, for protocolID: ProtocolID) throws {
+        guard handlers[protocolID] == nil else { throw ExchangeError.handlerAlreadyRegistered }
         handlers[protocolID] = handler
     }
 
@@ -129,12 +136,9 @@ public actor MessageLayer {
 
     /// Installs a secure session; this node encrypts with `encryptKey` and decrypts with `decryptKey`.
     @discardableResult
-    func addSecureSession(info: SessionInfo, encryptKey: [UInt8], decryptKey: [UInt8], peerParameters: SessionParameters,
-                          resumptionID: [UInt8]? = nil, sharedSecret: [UInt8]? = nil) throws -> SessionInfo {
-        var session = try SecureSession(info: info, encryptKey: encryptKey, decryptKey: decryptKey, peerParameters: peerParameters)
-        session.resumptionID = resumptionID
-        session.sharedSecret = sharedSecret
-        secureSessions[info.localSessionID] = session
+    func addSecureSession(info: SessionInfo, encryptKey: [UInt8], decryptKey: [UInt8], peerParameters: SessionParameters) throws -> SessionInfo {
+        secureSessions[info.localSessionID] = try SecureSession(info: info, encryptKey: encryptKey, decryptKey: decryptKey,
+                                                                 peerParameters: peerParameters)
         logger.debug("Session \(info.localSessionID) established (\(info.kind)) with \(info.peerAddress)")
         return info
     }
@@ -148,24 +152,13 @@ public actor MessageLayer {
         secureSessions[localSessionID]?.info.fabricIndex = fabricIndex
     }
 
-    /// The CASE session that a resumption id names, with its shared secret.
-    func resumable(_ resumptionID: [UInt8]) -> (SessionInfo, [UInt8])? {
-        for session in secureSessions.values where session.resumptionID.map({ MatterCrypto.equal($0, resumptionID) }) == true {
-            if let secret = session.sharedSecret { return (session.info, secret) }
-        }
-        return nil
-    }
-
     /// Removes sessions, failing their exchanges.
     public func removeSessions(where shouldRemove: (SessionInfo) -> Bool) async {
         let removed = secureSessions.values.filter { shouldRemove($0.info) }
         for session in removed {
             secureSessions[session.info.localSessionID] = nil
-            for (key, state) in exchanges where key.session == .secure(session.info.localSessionID) {
-                state.ackTask?.cancel()
-                state.retransmission?.task.cancel()
-                exchanges[key] = nil
-                await state.exchange.fail(ExchangeError.sessionGone)
+            for key in exchanges.keys where key.session == .secure(session.info.localSessionID) {
+                await tearDown(key, error: .sessionGone)
             }
             for observer in sessionCloseObservers { await observer(session.info) }
         }
@@ -196,8 +189,24 @@ public actor MessageLayer {
     }
 
     private func unsecuredInfo(_ peer: PeerAddress) -> SessionInfo {
-        SessionInfo(kind: .unsecured, localSessionID: 0, peerSessionID: 0, fabricIndex: nil, peerNodeID: 0, localNodeID: 0,
-                    caseAuthenticatedTags: [], attestationChallenge: [], peerAddress: peer)
+        SessionInfo(kind: .unsecured, localSessionID: 0, peerSessionID: 0, peerAddress: peer)
+    }
+
+    /// How long to wait for a response on an exchange: the peer's whole retransmission schedule (scaled like MRP)
+    /// plus time for it to do the work.
+    func responseTimeout(for key: ExchangeKey) -> Duration {
+        let interval = retryInterval(for: key.session)
+        var schedule: Duration = .zero
+        for attempt in 0..<reliability.maxTransmissions {
+            schedule += interval * backoff(attempt: attempt, jitter: 1)
+        }
+        return reliability.scaled(schedule) + .seconds(5)
+    }
+
+    /// MRP's backoff factor for a retransmission (Core §4.12.2.1); `jitter` is the random draw in [0, 1].
+    private func backoff(attempt: Int, jitter: Double) -> Double {
+        let exponent = Double(max(0, attempt - reliability.backoffThreshold))
+        return reliability.backoffMargin * pow(reliability.backoffBase, exponent) * (1 + jitter * reliability.backoffJitter)
     }
 
     private func makeExchange(key: ExchangeKey, info: SessionInfo, protocolID: ProtocolID) -> Exchange {
@@ -250,11 +259,8 @@ public actor MessageLayer {
     /// Retransmits until acknowledged (the task is cancelled) or MRP_MAX_TRANSMISSIONS is reached (Core §4.12.2.1).
     private func retransmit(_ frame: [UInt8], to peer: PeerAddress, key: ExchangeKey, counter: UInt32, interval: Duration) async {
         for attempt in 0..<reliability.maxTransmissions {
-            let exponent = Double(max(0, attempt - reliability.backoffThreshold))
-            let backoff = reliability.backoffMargin * pow(reliability.backoffBase, exponent)
-                * (1 + Double.random(in: 0...1) * reliability.backoffJitter)
             do {
-                try await Task.sleep(for: reliability.scaled(interval * backoff))
+                try await Task.sleep(for: reliability.scaled(interval * backoff(attempt: attempt, jitter: .random(in: 0...1))))
             } catch {
                 return
             }
@@ -266,12 +272,6 @@ public actor MessageLayer {
         logger.debug("Message \(counter) on exchange \(key.exchangeID) was not acknowledged")
         exchanges[key]?.retransmission = nil
         await exchanges[key]?.exchange.fail(ExchangeError.notAcknowledged)
-    }
-
-    private func pow(_ base: Double, _ exponent: Double) -> Double {
-        var result = 1.0
-        for _ in 0..<Int(exponent) { result *= base }
-        return result
     }
 
     /// Closes an exchange: a pending acknowledgement goes out at once; a message in flight keeps being retransmitted
@@ -288,6 +288,10 @@ public actor MessageLayer {
             await waitForAck(of: key, counter: pending.counter)
         }
         exchanges[key] = nil
+        // An unsecured session lives as long as its exchanges.
+        if case .unsecured(let session) = key.session, !exchanges.keys.contains(where: { $0.session == key.session }) {
+            unsecuredSessions[session] = nil
+        }
     }
 
     private func sendStandaloneAck(key: ExchangeKey, counter: UInt32) async {
@@ -327,10 +331,9 @@ public actor MessageLayer {
                 : MessageHeader(sessionID: 0, counter: counter, destination: key.peerNodeID == 0 ? .none : .node(key.peerNodeID))
             return (Message(header: header, payloadHeader: payloadHeader, payload: payload).unsecuredFrame, counter, key.peer)
         case .secure(let id):
-            guard var secure = secureSessions[id] else { throw ExchangeError.sessionGone }
+            guard let secure = secureSessions[id] else { throw ExchangeError.sessionGone }
             let counter = secure.localCounter
-            secure.localCounter &+= 1
-            secureSessions[id] = secure
+            secureSessions[id]?.localCounter &+= 1
             let header = MessageHeader(sessionID: secure.info.peerSessionID, counter: counter)
             let frame = try Message(header: header, payloadHeader: payloadHeader, payload: payload)
                 .sealedFrame(key: secure.encryptor, nonceSourceNodeID: secure.localNonceNodeID)
@@ -445,12 +448,15 @@ public actor MessageLayer {
 
 /// One conversation with a peer (Core §4.10).
 public actor Exchange {
-    let layer: MessageLayer
+    /// The message layer the exchange runs on.
+    public nonisolated let layer: MessageLayer
     let key: MessageLayer.ExchangeKey
-    public let session: SessionInfo
-    public let protocolID: ProtocolID
+    /// The session when the exchange started: its kind, ids and peer do not change.
+    public nonisolated let initialSession: SessionInfo
+    public nonisolated let protocolID: ProtocolID
     private var queue: [Message] = []
     private var waiter: CheckedContinuation<Message, Error>?
+    private var timeoutTask: Task<Void, Never>?
     /// Identifies the current wait, so a stale timeout does not end a later one.
     private var waitID: UInt64 = 0
     private var failure: Error?
@@ -458,16 +464,16 @@ public actor Exchange {
     init(layer: MessageLayer, key: MessageLayer.ExchangeKey, session: SessionInfo, protocolID: ProtocolID) {
         self.layer = layer
         self.key = key
-        self.session = session
+        initialSession = session
         self.protocolID = protocolID
     }
 
-    public var exchangeID: UInt16 { key.exchangeID }
-    public var isInitiator: Bool { key.isInitiator }
+    public nonisolated var exchangeID: UInt16 { key.exchangeID }
+    public nonisolated var isInitiator: Bool { key.isInitiator }
 
-    /// The session as it is now (a PASE session may since have been bound to a fabric).
-    public var currentSession: SessionInfo {
-        get async { await layer.session(session.localSessionID) ?? session }
+    /// The session as it is now: a PASE session may since have been bound to a fabric.
+    public var session: SessionInfo {
+        get async { await layer.session(initialSession.localSessionID) ?? initialSession }
     }
 
     public func send(_ opcode: UInt8, _ payload: [UInt8] = [], protocolID: ProtocolID? = nil) async throws {
@@ -482,17 +488,18 @@ public actor Exchange {
         try await send(.statusReport, report.encoded)
     }
 
-    /// The next message, waiting at most `timeout` (not scaled by the MRP time scale: it bounds the peer's work).
-    public func receive(timeout: Duration = .seconds(30)) async throws -> Message {
+    /// The next message, waiting at most `timeout`; by default the peer's retransmission schedule plus time to work.
+    public func receive(timeout: Duration? = nil) async throws -> Message {
         if !queue.isEmpty { return queue.removeFirst() }
         if let failure { throw failure }
+        let timeout = if let timeout { timeout } else { await layer.responseTimeout(for: key) }
         waitID &+= 1
         let id = waitID
         return try await withCheckedThrowingContinuation { continuation in
             waiter = continuation
-            Task { [weak self] in
-                try? await Task.sleep(for: timeout)
-                await self?.timeOut(id)
+            timeoutTask = Task { [weak self] in
+                guard (try? await Task.sleep(for: timeout)) != nil else { return }
+                await self?.resume(id, with: .failure(ExchangeError.timeout))
             }
         }
     }
@@ -504,9 +511,8 @@ public actor Exchange {
     }
 
     func deliver(_ message: Message) {
-        if let waiter {
-            self.waiter = nil
-            waiter.resume(returning: message)
+        if waiter != nil {
+            resume(waitID, with: .success(message))
         } else {
             queue.append(message)
         }
@@ -514,15 +520,14 @@ public actor Exchange {
 
     func fail(_ error: Error) {
         if failure == nil { failure = error }
-        if let waiter {
-            self.waiter = nil
-            waiter.resume(throwing: error)
-        }
+        resume(waitID, with: .failure(error))
     }
 
-    private func timeOut(_ id: UInt64) {
+    private func resume(_ id: UInt64, with result: Result<Message, Error>) {
         guard id == waitID, let waiter else { return }
         self.waiter = nil
-        waiter.resume(throwing: ExchangeError.timeout)
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        waiter.resume(with: result)
     }
 }

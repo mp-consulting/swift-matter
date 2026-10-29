@@ -16,6 +16,28 @@ public enum PeerAddress: Hashable, Sendable, CustomStringConvertible {
     }
 }
 
+/// Received datagrams, delivered in order by one consumer task rather than a task per datagram.
+final class DatagramInbox: Sendable {
+    typealias Datagram = (bytes: [UInt8], peer: PeerAddress)
+    private let continuation: AsyncStream<Datagram>.Continuation
+    private let consumer: Task<Void, Never>
+
+    init(receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) {
+        let (stream, continuation) = AsyncStream.makeStream(of: Datagram.self, bufferingPolicy: .bufferingNewest(256))
+        self.continuation = continuation
+        consumer = Task {
+            for await datagram in stream { await receive(datagram.bytes, datagram.peer) }
+        }
+    }
+
+    func post(_ bytes: [UInt8], from peer: PeerAddress) { continuation.yield((bytes, peer)) }
+
+    func close() {
+        continuation.finish()
+        consumer.cancel()
+    }
+}
+
 /// A datagram transport: UDP, or memory in tests.
 public protocol MatterTransport: Sendable {
     /// Starts delivering received datagrams to `receive`.
@@ -29,6 +51,7 @@ public final class UDPTransport: MatterTransport {
     public let port: Int
     private let group: EventLoopGroup
     private let channel = NIOLockedValueBox<Channel?>(nil)
+    private let inbox = NIOLockedValueBox<DatagramInbox?>(nil)
 
     public init(port: Int = 5540, group: EventLoopGroup = MultiThreadedEventLoopGroup.singleton) {
         self.port = port
@@ -39,10 +62,12 @@ public final class UDPTransport: MatterTransport {
     public var localPort: Int? { channel.withLockedValue { $0?.localAddress?.port } }
 
     public func start(receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) async throws {
+        let inbox = DatagramInbox(receive: receive)
+        self.inbox.withLockedValue { $0 = inbox }
         let bound = try await DatagramBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
-                channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Inbound(receive: receive)) }
+                channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Inbound(inbox: inbox)) }
             }
             .bind(host: "::", port: port)
             .get()
@@ -60,6 +85,7 @@ public final class UDPTransport: MatterTransport {
     public func close() async {
         let channel = channel.withLockedValue { value in defer { value = nil }; return value }
         try? await channel?.close()
+        inbox.withLockedValue { value in value?.close(); value = nil }
     }
 
     static func mapped(_ address: SocketAddress) throws -> SocketAddress {
@@ -69,23 +95,20 @@ public final class UDPTransport: MatterTransport {
 
     private final class Inbound: ChannelInboundHandler, Sendable {
         typealias InboundIn = AddressedEnvelope<ByteBuffer>
-        let receive: @Sendable ([UInt8], PeerAddress) async -> Void
+        let inbox: DatagramInbox
 
-        init(receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) { self.receive = receive }
+        init(inbox: DatagramInbox) { self.inbox = inbox }
 
         func channelRead(context: ChannelHandlerContext, data: NIOAny) {
             let envelope = unwrapInboundIn(data)
-            let bytes = Array(envelope.data.readableBytesView)
-            let peer = PeerAddress.socket(envelope.remoteAddress)
-            let receive = receive
-            Task { await receive(bytes, peer) }
+            inbox.post(Array(envelope.data.readableBytesView), from: .socket(envelope.remoteAddress))
         }
     }
 }
 
 /// An in-memory network for tests: endpoints by name, with an optional filter that drops datagrams.
 public actor MemoryNetwork {
-    private var endpoints: [String: @Sendable ([UInt8], PeerAddress) async -> Void] = [:]
+    private var endpoints: [String: DatagramInbox] = [:]
     /// Returns false to drop a datagram (from, to, bytes).
     private var filter: (@Sendable (String, String, [UInt8]) -> Bool)?
 
@@ -96,14 +119,14 @@ public actor MemoryNetwork {
     public func transport(named name: String) -> MemoryTransport { MemoryTransport(network: self, name: name) }
 
     func register(_ name: String, receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) {
-        endpoints[name] = receive
+        endpoints[name] = DatagramInbox(receive: receive)
     }
 
-    func unregister(_ name: String) { endpoints[name] = nil }
+    func unregister(_ name: String) { endpoints.removeValue(forKey: name)?.close() }
 
     func deliver(_ datagram: [UInt8], from source: String, to destination: String) {
-        guard let receive = endpoints[destination], filter?(source, destination, datagram) ?? true else { return }
-        Task { await receive(datagram, .memory(source)) }
+        guard let inbox = endpoints[destination], filter?(source, destination, datagram) ?? true else { return }
+        inbox.post(datagram, from: .memory(source))
     }
 }
 

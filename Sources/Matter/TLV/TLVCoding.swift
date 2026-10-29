@@ -104,8 +104,7 @@ public enum TLVEncoder {
 public struct TLVDecoder {
     public static let maxDepth = 32
 
-    private let bytes: [UInt8]
-    private var offset = 0
+    private var reader: ByteReader
 
     /// Decodes exactly one element that spans all of `bytes`.
     public static func decode(_ bytes: some Collection<UInt8>) throws -> TLVElement {
@@ -118,21 +117,13 @@ public struct TLVDecoder {
     public static func decodePrefix(_ bytes: some Collection<UInt8>) throws -> (TLVElement, Int) {
         var decoder = TLVDecoder(bytes: Array(bytes))
         let element = try decoder.next(depth: 0)
-        return (element, decoder.offset)
+        return (element, decoder.reader.offset)
     }
 
-    private init(bytes: [UInt8]) { self.bytes = bytes }
+    private init(bytes: [UInt8]) { reader = ByteReader(bytes, truncated: TLVError.truncated) }
 
-    private mutating func take(_ count: Int) throws -> ArraySlice<UInt8> {
-        guard count >= 0, bytes.count - offset >= count else { throw TLVError.truncated }
-        defer { offset += count }
-        return bytes[offset..<offset + count]
-    }
-
-    private mutating func read<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
-        let slice = try take(MemoryLayout<T>.size)
-        return slice.reversed().reduce(T.zero) { $0 << 8 | T(truncatingIfNeeded: $1) }
-    }
+    private mutating func take(_ count: Int) throws -> ArraySlice<UInt8> { try reader.take(count) }
+    private mutating func read<T: FixedWidthInteger>(_ type: T.Type) throws -> T { try reader.read(type) }
 
     /// Returns nil on an end-of-container marker.
     private mutating func nextOrEnd(depth: Int) throws -> TLVElement? {
@@ -181,7 +172,7 @@ public struct TLVDecoder {
             guard depth < Self.maxDepth else { throw TLVError.tooDeep }
             var members: [TLVElement] = []
             while true {
-                guard offset < bytes.count else { throw TLVError.missingEndOfContainer }
+                guard reader.remaining > 0 else { throw TLVError.missingEndOfContainer }
                 guard let member = try nextOrEnd(depth: depth + 1) else { break }
                 members.append(member)
             }
@@ -204,7 +195,7 @@ public struct TLVDecoder {
         case 2: UInt64(try read(UInt32.self))
         default: try read(UInt64.self)
         }
-        guard length <= UInt64(bytes.count - offset) else { throw TLVError.truncated }
+        guard length <= UInt64(reader.remaining) else { throw TLVError.truncated }
         return Int(length)
     }
 }

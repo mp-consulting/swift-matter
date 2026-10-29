@@ -79,6 +79,20 @@ public struct SessionInfo: Hashable, Sendable {
     public var peerAddress: PeerAddress
 
     public var isSecure: Bool { kind != .unsecured }
+
+    public init(kind: Kind, localSessionID: UInt16, peerSessionID: UInt16, fabricIndex: UInt8? = nil, peerNodeID: UInt64 = 0,
+                localNodeID: UInt64 = 0, caseAuthenticatedTags: [UInt32] = [], attestationChallenge: [UInt8] = [],
+                peerAddress: PeerAddress) {
+        self.kind = kind
+        self.localSessionID = localSessionID
+        self.peerSessionID = peerSessionID
+        self.fabricIndex = fabricIndex
+        self.peerNodeID = peerNodeID
+        self.localNodeID = localNodeID
+        self.caseAuthenticatedTags = caseAuthenticatedTags
+        self.attestationChallenge = attestationChallenge
+        self.peerAddress = peerAddress
+    }
 }
 
 /// Keys and counters of one secure unicast session.
@@ -89,9 +103,6 @@ struct SecureSession {
     var localCounter: UInt32
     var reception: MessageReceptionState
     var peerParameters: SessionParameters
-    /// For CASE resumption: the id and the shared secret.
-    var resumptionID: [UInt8]?
-    var sharedSecret: [UInt8]?
 
     init(info: SessionInfo, encryptKey: [UInt8], decryptKey: [UInt8], peerParameters: SessionParameters) throws {
         self.info = info

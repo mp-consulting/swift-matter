@@ -47,22 +47,22 @@ public enum PASE {
     }
 
     /// Runs the responder side on an unsecured exchange whose first message was PBKDFParamRequest.
-    static func respond(on exchange: Exchange, request: Message, layer: MessageLayer, context: ResponderContext,
-                        logger: Logger) async {
+    static func respond(on exchange: Exchange, request: Message, context: ResponderContext, logger: Logger) async {
         do {
-            try await runResponder(exchange, request: request, layer: layer, context: context)
+            try await runResponder(exchange, request: request, context: context)
             await context.attempted(nil)
         } catch let error as PASEError {
-            logger.debug("PASE with \(exchange.session.peerAddress) failed: \(error)")
+            logger.debug("PASE with \(exchange.initialSession.peerAddress) failed: \(error)")
             try? await exchange.sendStatus(.invalidParameter)
             await context.attempted(error)
         } catch {
-            logger.debug("PASE with \(exchange.session.peerAddress) failed: \(error)")
+            logger.debug("PASE with \(exchange.initialSession.peerAddress) failed: \(error)")
             await context.attempted(.invalidMessage)
         }
     }
 
-    private static func runResponder(_ exchange: Exchange, request: Message, layer: MessageLayer, context: ResponderContext) async throws {
+    private static func runResponder(_ exchange: Exchange, request: Message, context: ResponderContext) async throws {
+        let layer = exchange.layer
         guard let window = await context.verifier() else { throw PASEError.noCommissioningWindow }
         let fields = try TLVStruct(decoding: request.payload)
         let initiatorRandom = try fields.bytes(1)
@@ -86,8 +86,8 @@ public enum PASE {
         let pake1 = try await exchange.receive()
         try expect(pake1, .pake1)
         let pA = try TLVStruct(decoding: pake1.payload).bytes(1)
-        let transcriptContext = MatterCrypto.hash(SPAKE2Plus.contextPrefix + request.payload + responsePayload)
-        let spake = try SPAKE2Plus.VerifierSession(context: transcriptContext, verifier: window.verifier)
+        let spake = try SPAKE2Plus.VerifierSession(context: transcriptContext(request.payload, responsePayload),
+                                                   verifier: window.verifier)
         let keys = try spake.keys(proverShare: pA)
         try await exchange.send(.pake2, TLVEncoder.encode(.structure([.field(1, .bytes(spake.share)), .field(2, .bytes(keys.confirmationB))])))
 
@@ -96,13 +96,26 @@ public enum PASE {
         let cA = try TLVStruct(decoding: pake3.payload).bytes(1)
         guard MatterCrypto.equal(cA, keys.confirmationA) else { throw PASEError.confirmationFailed }
 
-        let sessionKeys = SessionKeys(secret: keys.sharedSecret, salt: [], info: sessionKeysInfo)
-        let info = SessionInfo(kind: .pase, localSessionID: localSessionID, peerSessionID: initiatorSessionID, fabricIndex: nil,
-                               peerNodeID: 0, localNodeID: 0, caseAuthenticatedTags: [],
-                               attestationChallenge: sessionKeys.attestationChallenge, peerAddress: exchange.session.peerAddress)
-        try await layer.addSecureSession(info: info, encryptKey: sessionKeys.responderToInitiator,
-                                         decryptKey: sessionKeys.initiatorToResponder, peerParameters: peerParameters)
+        try await installSession(keys.sharedSecret, isInitiator: false, localSessionID: localSessionID, peerSessionID: initiatorSessionID,
+                                 peer: exchange.initialSession.peerAddress, peerParameters: peerParameters, layer: layer)
         try await exchange.sendStatus(.sessionEstablished)
+    }
+
+    /// Context = Hash(prefix || PBKDFParamRequest || PBKDFParamResponse) (Core §3.10.3).
+    static func transcriptContext(_ request: [UInt8], _ response: [UInt8]) -> [UInt8] {
+        MatterCrypto.hash(SPAKE2Plus.contextPrefix + request + response)
+    }
+
+    /// Derives the session keys from Ke and installs the session, keys in this node's direction (Core §4.14.1.2).
+    @discardableResult
+    static func installSession(_ sharedSecret: [UInt8], isInitiator: Bool, localSessionID: UInt16, peerSessionID: UInt16,
+                               peer: PeerAddress, peerParameters: SessionParameters, layer: MessageLayer) async throws -> SessionInfo {
+        let keys = SessionKeys(secret: sharedSecret, salt: [], info: sessionKeysInfo)
+        let info = SessionInfo(kind: .pase, localSessionID: localSessionID, peerSessionID: peerSessionID,
+                               attestationChallenge: keys.attestationChallenge, peerAddress: peer)
+        return try await layer.addSecureSession(
+            info: info, encryptKey: isInitiator ? keys.initiatorToResponder : keys.responderToInitiator,
+            decryptKey: isInitiator ? keys.responderToInitiator : keys.initiatorToResponder, peerParameters: peerParameters)
     }
 
     static func expect(_ message: Message, _ opcode: SecureChannelOpcode) throws {
@@ -148,8 +161,7 @@ public enum PASE {
         guard (16...32).contains(salt.count), let iterationCount = Int(exactly: iterations) else { throw PASEError.invalidMessage }
 
         let (w0, w1) = try SPAKE2Plus.proverValues(passcode: passcode, salt: salt, iterations: iterationCount)
-        let transcriptContext = MatterCrypto.hash(SPAKE2Plus.contextPrefix + requestPayload + response.payload)
-        let spake = try SPAKE2Plus.Prover(context: transcriptContext, w0: w0, w1: w1)
+        let spake = try SPAKE2Plus.Prover(context: transcriptContext(requestPayload, response.payload), w0: w0, w1: w1)
         try await exchange.send(.pake1, TLVEncoder.encode(.structure([.field(1, .bytes(spake.share))])))
 
         let pake2 = try await exchange.receive()
@@ -167,42 +179,35 @@ public enum PASE {
         let status = try StatusReport(decoding: finished.payload)
         guard status == .sessionEstablished else { throw PASEError.rejected(status) }
 
-        let sessionKeys = SessionKeys(secret: keys.sharedSecret, salt: [], info: sessionKeysInfo)
-        let info = SessionInfo(kind: .pase, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: nil,
-                               peerNodeID: 0, localNodeID: 0, caseAuthenticatedTags: [],
-                               attestationChallenge: sessionKeys.attestationChallenge, peerAddress: peer)
-        return try await layer.addSecureSession(info: info, encryptKey: sessionKeys.initiatorToResponder,
-                                                decryptKey: sessionKeys.responderToInitiator,
-                                                peerParameters: SessionParameters(tlv: fields[5]))
+        return try await installSession(keys.sharedSecret, isInitiator: true, localSessionID: localSessionID, peerSessionID: peerSessionID,
+                                        peer: peer, peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
     }
 }
 
 /// The Secure Channel protocol's unsolicited messages: PASE and CASE establishment, and CloseSession.
 public struct SecureChannelServer: ProtocolHandler {
-    let layer: MessageLayer
     let pase: PASE.ResponderContext
     let caseResponder: (any CASEResponding)?
     let logger: Logger
 
-    public init(layer: MessageLayer, pase: PASE.ResponderContext, caseResponder: (any CASEResponding)? = nil,
+    public init(pase: PASE.ResponderContext, caseResponder: (any CASEResponding)? = nil,
                 logger: Logger = Logger(label: "matter.securechannel")) {
-        self.layer = layer
         self.pase = pase
         self.caseResponder = caseResponder
         self.logger = logger
     }
 
     public func handle(_ exchange: Exchange, first message: Message) async {
+        let session = exchange.initialSession
         switch SecureChannelOpcode(rawValue: message.payloadHeader.opcode) {
-        case .pbkdfParamRequest where exchange.session.kind == .unsecured:
-            await PASE.respond(on: exchange, request: message, layer: layer, context: pase, logger: logger)
-        case .sigma1 where exchange.session.kind == .unsecured:
+        case .pbkdfParamRequest where session.kind == .unsecured:
+            await PASE.respond(on: exchange, request: message, context: pase, logger: logger)
+        case .sigma1 where session.kind == .unsecured:
             await caseResponder?.respond(on: exchange, sigma1: message)
-        case .statusReport where exchange.session.isSecure:
+        case .statusReport where session.isSecure:
             // CloseSession (Core §4.11.1.4): the peer ends the session it sent this over.
             if let report = try? StatusReport(decoding: message.payload), report == .closeSession {
-                let id = exchange.session.localSessionID
-                await layer.removeSessions { $0.localSessionID == id }
+                await exchange.layer.removeSessions { $0.localSessionID == session.localSessionID }
             }
         default:
             break
