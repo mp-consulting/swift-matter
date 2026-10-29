@@ -1,0 +1,147 @@
+/// Access control (Core §6.6): which privilege a session holds on an endpoint's cluster.
+
+/// An Access Control List entry (AccessControlEntryStruct, Core §9.10.5.4).
+public struct AccessControlEntry: Hashable, Sendable {
+    public enum AuthMode: UInt8, Sendable {
+        case pase = 1
+        case `case` = 2
+        case group = 3
+    }
+
+    public struct Target: Hashable, Sendable {
+        public var cluster: ClusterID?
+        public var endpoint: EndpointNumber?
+        public var deviceType: UInt32?
+
+        public init(cluster: ClusterID? = nil, endpoint: EndpointNumber? = nil, deviceType: UInt32? = nil) {
+            self.cluster = cluster
+            self.endpoint = endpoint
+            self.deviceType = deviceType
+        }
+    }
+
+    public var fabricIndex: FabricIndex
+    public var privilege: Privilege
+    public var authMode: AuthMode
+    /// Node ids or CASE Authenticated Tags; nil grants any subject of the auth mode.
+    public var subjects: [UInt64]?
+    /// Nil grants every target.
+    public var targets: [Target]?
+
+    public init(fabricIndex: FabricIndex, privilege: Privilege, authMode: AuthMode, subjects: [UInt64]?, targets: [Target]? = nil) {
+        self.fabricIndex = fabricIndex
+        self.privilege = privilege
+        self.authMode = authMode
+        self.subjects = subjects
+        self.targets = targets
+    }
+
+    /// The TLV of the ACL attribute's entries.
+    public var tlv: TLVValue {
+        var fields: [TLVElement] = [
+            .field(1, .unsigned(UInt64(privilege.rawValue))), .field(2, .unsigned(UInt64(authMode.rawValue))),
+            .field(3, subjects.map { .array($0.map { TLVElement(.unsigned($0)) }) } ?? .null),
+            .field(4, targets.map { targets in
+                .array(targets.map { target in
+                    TLVElement(.structure([
+                        .field(0, target.cluster.map { .unsigned(UInt64($0)) } ?? .null),
+                        .field(1, target.endpoint.map { .unsigned(UInt64($0)) } ?? .null),
+                        .field(2, target.deviceType.map { .unsigned(UInt64($0)) } ?? .null),
+                    ]))
+                })
+            } ?? .null),
+        ]
+        fields.append(.field(fabricIndexFieldTag, .unsigned(UInt64(fabricIndex))))
+        return .structure(fields)
+    }
+
+    /// From a written entry; throws CONSTRAINT_ERROR for invalid ones (Core §9.10.5.4).
+    public init(tlv value: TLVValue) throws {
+        do {
+            let fields = try TLVStruct(value)
+            guard let privilege = Privilege(rawValue: try fields.uint(1, as: UInt8.self)),
+                  let authMode = AuthMode(rawValue: try fields.uint(2, as: UInt8.self)),
+                  authMode != .pase
+            else { throw StatusError(.constraintError) }
+            self.privilege = privilege
+            self.authMode = authMode
+            fabricIndex = try fields.uint(fabricIndexFieldTag, as: UInt8.self)
+            switch fields[3] {
+            case nil, .null?: subjects = nil
+            case .array(let entries)?: subjects = try entries.map { guard let value = $0.value.uint else { throw StatusError(.constraintError) }; return value }
+            default: throw StatusError(.constraintError)
+            }
+            switch fields[4] {
+            case nil, .null?: targets = nil
+            case .array(let entries)?:
+                targets = try entries.map { entry in
+                    let target = try TLVStruct(entry.value)
+                    func optional<T: FixedWidthInteger & UnsignedInteger>(_ tag: UInt8) throws -> T? {
+                        guard let value = target[tag], value != .null else { return nil }
+                        return try narrow(value)
+                    }
+                    let result = Target(cluster: try optional(0), endpoint: try optional(1), deviceType: try optional(2))
+                    // A target names a cluster, an endpoint or a device type, and not both an endpoint and a device type.
+                    guard result.cluster != nil || result.endpoint != nil || result.deviceType != nil,
+                          result.endpoint == nil || result.deviceType == nil
+                    else { throw StatusError(.constraintError) }
+                    return result
+                }
+            default: throw StatusError(.constraintError)
+            }
+            // A group-mode entry may not grant Administer, and the subjects are 16-bit group ids then.
+            if authMode == .group, privilege == .administer { throw StatusError(.constraintError) }
+        } catch let error as StatusError {
+            throw error
+        } catch {
+            throw StatusError(.constraintError)
+        }
+    }
+
+    /// Whether the entry grants its privilege to a session for a target (Core §6.6.5.2).
+    func grants(_ session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Bool {
+        guard session.fabricIndex == fabricIndex, session.kind == .case, authMode == .case else { return false }
+        if let subjects {
+            guard subjects.contains(where: { Self.subject($0, matches: session) }) else { return false }
+        }
+        if let targets {
+            return targets.contains { target in
+                (target.cluster ?? cluster) == cluster && (target.endpoint ?? endpoint) == endpoint
+                    && (target.deviceType.map { deviceTypes.contains($0) } ?? true)
+            }
+        }
+        return true
+    }
+
+    /// A subject is the peer's node id, or a CAT whose identifier matches one of the peer's with a version at least
+    /// as high (Core §6.6.2.1.2).
+    static func subject(_ subject: UInt64, matches session: SessionInfo) -> Bool {
+        if subject >> 32 == 0xFFFF_FFFD {
+            let identifier = UInt32(truncatingIfNeeded: subject) >> 16
+            let version = UInt16(truncatingIfNeeded: subject)
+            return session.caseAuthenticatedTags.contains { $0 >> 16 == identifier && UInt16(truncatingIfNeeded: $0) >= version }
+        }
+        return subject == session.peerNodeID
+    }
+}
+
+/// Decides access for the Interaction Model.
+public protocol AccessController: Sendable {
+    /// The highest privilege the session holds on the target, or nil for none.
+    func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) async -> Privilege?
+}
+
+/// Grants by ACL entries; a PASE session holds Administer implicitly while commissioning (Core §6.6.2.9).
+public actor AccessControlList: AccessController {
+    public private(set) var entries: [AccessControlEntry] = []
+
+    public init(entries: [AccessControlEntry] = []) { self.entries = entries }
+
+    public func setEntries(_ entries: [AccessControlEntry]) { self.entries = entries }
+
+    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Privilege? {
+        if session.kind == .pase { return .administer }
+        return entries.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }
+            .map(\.privilege).max()
+    }
+}
