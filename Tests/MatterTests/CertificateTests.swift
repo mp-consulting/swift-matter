@@ -90,3 +90,12 @@ struct CertificateTests {
         #expect(try DER.parse(DER.objectIdentifier(oid).encoded) == .objectIdentifier(oid))
     }
 }
+
+extension CertificateTests {
+    @Test func rejectsKnownExtensionsDisguisedAsFutureOnes() throws {
+        var fields = try TLVDecoder.decode(Self.nocTLV).value.elements!
+        let basicConstraints = DER.sequence([.objectIdentifier(OID.basicConstraints), .boolean(true), .octetString(DER.sequence([]).encoded)])
+        fields[9] = .field(10, .list([.field(6, .bytes(basicConstraints.encoded))]))
+        #expect(throws: CertificateError.invalidExtension) { try MatterCertificate(tlv: TLVValue.structure(fields)) }
+    }
+}

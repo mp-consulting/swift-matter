@@ -207,7 +207,12 @@ public struct MatterCertificate: Hashable, Sendable {
                 }
             case (4, .bytes(let id)) where id.count == 20: subjectKeyID = id
             case (5, .bytes(let id)) where id.count == 20: authorityKeyID = id
-            case (6, .bytes(let raw)): futureExtensions.append(raw)
+            case (6, .bytes(let raw)):
+                // A future extension is one whole X.509 extension; a known one hidden there would drop its constraints.
+                guard let oid = (try? DER.parse(raw))?[0]?.objectIdentifier, !Self.knownExtensions.contains(oid) else {
+                    throw CertificateError.invalidExtension
+                }
+                futureExtensions.append(raw)
             default: throw CertificateError.invalidExtension
             }
         }
@@ -272,6 +277,10 @@ public struct MatterCertificate: Hashable, Sendable {
         guard let key = try? issuer.signingKey else { return false }
         return isSigned(by: key)
     }
+
+    static let knownExtensions: Set<DER.ObjectIdentifier> = [
+        OID.basicConstraints, OID.keyUsage, OID.extendedKeyUsage, OID.subjectKeyIdentifier, OID.authorityKeyIdentifier,
+    ]
 
     static func subjectPublicKeyInfo(_ publicKey: [UInt8]) -> DER {
         .sequence([.sequence([.objectIdentifier(OID.ecPublicKey), .objectIdentifier(OID.prime256v1)]), .bitString(publicKey)])
