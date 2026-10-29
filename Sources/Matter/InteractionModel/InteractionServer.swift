@@ -23,6 +23,14 @@ public actor InteractionServer: ProtocolHandler {
         self.logger = logger
     }
 
+    /// Serves the Interaction Model on a message layer; subscriptions end with their sessions.
+    public func serve(on layer: MessageLayer) async throws {
+        try await layer.register(self, for: .interactionModel)
+        await layer.onSessionClosed { [weak self] closed in
+            await self?.cancelSubscriptions { $0.localSessionID == closed.localSessionID && $0.peerSessionID == closed.peerSessionID }
+        }
+    }
+
     public nonisolated func handle(_ exchange: Exchange, first message: Message) async {
         await serve(exchange, first: message)
     }
@@ -38,6 +46,10 @@ public actor InteractionServer: ProtocolHandler {
                 timedDeadline = .now + .milliseconds(Int(timeout))
                 try await exchange.sendIMStatus(.success)
                 message = try await exchange.receive()
+                // Only a write or an invoke may follow a Timed Request (Core §8.6).
+                guard [IMOpcode.writeRequest.rawValue, IMOpcode.invokeRequest.rawValue].contains(message.payloadHeader.opcode) else {
+                    throw StatusError(.invalidAction)
+                }
             }
             switch IMOpcode(rawValue: message.payloadHeader.opcode) {
             case .readRequest: try await read(message, on: exchange)
@@ -261,9 +273,12 @@ public actor InteractionServer: ProtocolHandler {
 
     private func write(_ message: Message, on exchange: Exchange, timedDeadline: ContinuousClock.Instant?) async throws {
         var message = message
+        var isFirstChunk = true
         while true {
             let fields = try TLVStruct(decoding: message.payload)
-            try checkTimed(fields.bool(1), deadline: timedDeadline)
+            // The Timed Request's window bounds only the first chunk.
+            try checkTimed(fields.bool(1), deadline: isFirstChunk ? timedDeadline : nil, timed: timedDeadline != nil)
+            isFirstChunk = false
             let session = await exchange.session
             let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange)
             var statuses: [TLVElement] = []
@@ -316,9 +331,9 @@ public actor InteractionServer: ProtocolHandler {
         }
     }
 
-    private func checkTimed(_ flagged: Bool, deadline: ContinuousClock.Instant?) throws {
+    private func checkTimed(_ flagged: Bool, deadline: ContinuousClock.Instant?, timed: Bool? = nil) throws {
         // The timed flag and a preceding Timed Request go together (Core §8.7.2, §8.8.2).
-        guard flagged == (deadline != nil) else { throw StatusError(.timedRequestMismatch) }
+        guard flagged == (timed ?? (deadline != nil)) else { throw StatusError(.timedRequestMismatch) }
         if let deadline, ContinuousClock.now > deadline { throw StatusError(.timeout) }
     }
 

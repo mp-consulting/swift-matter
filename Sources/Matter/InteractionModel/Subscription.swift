@@ -118,9 +118,9 @@ actor Subscription {
 
         var attributes = changed.isEmpty ? [] : await server.attributeReports(spec.attributes, session: session,
                                                                               fabricFiltered: spec.fabricFiltered, only: changed)
-        // New endpoints under wildcard paths are reported in full.
+        // New endpoints are reported in full under the paths that cover them, wildcard or naming them.
         for endpoint in added.sorted() {
-            let paths = spec.attributes.filter { $0.endpoint == nil }.map { path -> AttributePath in
+            let paths = spec.attributes.filter { $0.endpoint == nil || $0.endpoint == endpoint }.map { path -> AttributePath in
                 var concrete = path
                 concrete.endpoint = endpoint
                 return concrete

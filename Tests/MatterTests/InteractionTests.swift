@@ -15,7 +15,7 @@ struct IMFixture {
         pair = try await Pair()
         server = InteractionServer(dataModel: model, accessControl: AccessControlList(), payloadLimit: 400)
         await server.setTimeScale(0.01)
-        try await pair.device.register(server, for: .interactionModel)
+        try await server.serve(on: pair.device)
         client = InteractionClient(layer: pair.controller)
         try await pair.controller.register(client, for: .interactionModel)
 
@@ -152,6 +152,10 @@ struct InteractionTests {
         // Keep-alive: an empty report at the (scaled) maximum interval.
         let keepAlive = await reports.next()
         #expect(keepAlive?.attributes.isEmpty == true)
+
+        // Closing the session ends the subscription.
+        await fixture.pair.device.removeSessions { _ in true }
+        try await eventually { await fixture.server.subscriptionCount == 0 }
     }
 
     @Test func subscriptionsSeeNewEndpoints() async throws {
