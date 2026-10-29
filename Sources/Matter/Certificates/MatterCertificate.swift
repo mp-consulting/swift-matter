@@ -352,4 +352,6 @@ public enum CertificateError: Error, Equatable, Sendable {
     case invalidPublicKey
     case invalidSignature
     case invalidExtension
+    /// An operational chain failed validation; the reason names the certificate.
+    case invalidChain(String)
 }
