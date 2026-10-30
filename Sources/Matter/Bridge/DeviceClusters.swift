@@ -23,6 +23,12 @@ public enum DeviceCommand: Hashable, Sendable {
     case setLocked(Bool)
     /// Open or close a water valve.
     case setValveOpen(Bool)
+    /// A robot vacuum's commands.
+    case startCleaning
+    case stopCleaning
+    case pauseCleaning
+    case resumeCleaning
+    case returnToDock
     case identify(seconds: UInt16)
 }
 

@@ -133,6 +133,45 @@ struct BridgeTests {
         #expect(energy[0] == .signed(2_500_000))
     }
 
+    @Test func drivesARobotVacuum() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let robot = try await fixture.bridge.add(BridgedDeviceInfo(id: "robot", name: "Robot"), kind: .roboticVacuum) { await commands.append($0) }
+        typealias Run = RvcRunModeCluster
+        typealias Operational = RvcOperationalStateCluster
+        #expect(try await fixture.read(robot.endpoint, Run.id, Run.Attribute.supportedModes).elements?.count == 2)
+
+        // Cleaning starts through the run mode; the robot reports it is running.
+        guard case .response(_, let changed) = try await fixture.invoke(robot.endpoint, Run.id, Run.Command.changeToMode, [.field(0, .unsigned(1))])
+        else { Issue.record("no ChangeToModeResponse"); return }
+        #expect(changed[0]?.uint == Run.ModeChangeStatus.success)
+        #expect(await commands.values == [.startCleaning])
+        await robot.update(.robot(.running))
+        #expect(try await fixture.read(robot.endpoint, Run.id, Run.Attribute.currentMode) == .unsigned(1))
+        #expect(try await fixture.read(robot.endpoint, Operational.id, Operational.Attribute.operationalState)
+            == .unsigned(Operational.OperationalStateEnum.running))
+
+        // Resume while running is refused; Pause is passed on.
+        guard case .response(_, let resumed) = try await fixture.invoke(robot.endpoint, Operational.id, Operational.Command.resume)
+        else { Issue.record("no OperationalCommandResponse"); return }
+        #expect(resumed[0]?[0]?.uint == Operational.ErrorStateEnum.commandInvalidInState)
+        _ = try await fixture.invoke(robot.endpoint, Operational.id, Operational.Command.pause)
+        #expect(await commands.values == [.startCleaning, .pauseCleaning])
+        // An unknown mode is refused.
+        guard case .response(_, let unknown) = try await fixture.invoke(robot.endpoint, Run.id, Run.Command.changeToMode, [.field(0, .unsigned(9))])
+        else { Issue.record("no ChangeToModeResponse"); return }
+        #expect(unknown[0]?.uint == Run.ModeChangeStatus.unsupportedMode)
+
+        // Back on its dock: the run ends with OperationCompletion; an error says so with OperationalError.
+        await robot.update(.robot(.docked))
+        #expect(try await fixture.read(robot.endpoint, Run.id, Run.Attribute.currentMode) == .unsigned(0))
+        await robot.update(.robot(.error))
+        let (_, events) = try await fixture.base.commissioner.client.read([], events: [EventPath(endpoint: robot.endpoint, cluster: Operational.id)],
+                                                                         session: fixture.session)
+        #expect(events.compactMap { report -> EventID? in if case .data(let record) = report { record.event } else { nil } }
+            == [Operational.Event.operationCompletion, Operational.Event.operationalError])
+    }
+
     @Test func cutsLabelsByUTF8Bytes() {
         #expect("Lumière du salon éclairée ce soir".utf8Prefix(32).utf8.count <= 32)
         #expect("Lumière du salon éclairée ce soir".utf8Prefix(32) == "Lumière du salon éclairée ce ")

@@ -94,6 +94,12 @@ public struct DeviceKind: Sendable {
         await base(handler, actuator: false) + [await DeviceClusters.valve(handler)]
     }
 
+    /// A robot vacuum: cleaning starts and stops through RVC Run Mode, and it pauses, resumes and goes home through RVC
+    /// Operational State; it reports its state with `DeviceState.robot`.
+    public static let roboticVacuum = DeviceKind(deviceTypes: [DeviceTypes.roboticVacuumCleaner]) { handler in
+        await base(handler, actuator: false) + [await DeviceClusters.rvcRunMode(handler), await DeviceClusters.rvcOperationalState(handler)]
+    }
+
     /// The same device measuring its power and energy too: an Electrical Sensor on its endpoint (Device Library §2.5),
     /// reported with `DeviceState.power` and `.energy`.
     public func metered() -> DeviceKind {
@@ -179,6 +185,8 @@ public enum DeviceState: Hashable, Sendable {
     case power(watts: Double?)
     /// Energy used since the meter started, kWh; a metered device's.
     case energy(kilowattHours: Double?)
+    /// A robot vacuum's state.
+    case robot(RobotState)
 }
 
 /// A press of a bridged button (Generic Switch).
@@ -303,6 +311,9 @@ public actor BridgedDevice {
                                                   .field(S.endTimestamp, .unsigned(UInt64(MatterCertificate.matterSeconds(Date()))))])
             await cluster.set(ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported, measurement)
             await cluster.emit(ElectricalEnergyMeasurementCluster.Event.cumulativeEnergyMeasured, data: .structure([.field(0, measurement)]))
+        case .robot(let robot):
+            await DeviceClusters.setRobot(robot, runMode: cluster(RvcRunModeCluster.id, part: part),
+                                          operational: cluster(RvcOperationalStateCluster.id, part: part))
         case .battery(let percent):
             // BatPercentRemaining is in half percents; the charge level warns below 20 % and is critical below 10 %.
             let clamped = UInt64(min(percent, 100))
