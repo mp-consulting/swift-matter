@@ -79,6 +79,13 @@ struct BridgeTests {
         #expect(events.count == 1)
     }
 
+    @Test func cutsLabelsByUTF8Bytes() {
+        #expect("Lumière du salon éclairée ce soir".utf8Prefix(32).utf8.count <= 32)
+        #expect("Lumière du salon éclairée ce soir".utf8Prefix(32) == "Lumière du salon éclairée ce ")
+        #expect("short".utf8Prefix(32) == "short")
+        #expect("🌙🌙🌙🌙🌙🌙🌙🌙🌙".utf8Prefix(32) == "🌙🌙🌙🌙🌙🌙🌙🌙")
+    }
+
     @Test func keepsUniqueIDsWithinTheirLimit() {
         #expect(BridgedDeviceInfo(id: "lamp", name: "Lamp").uniqueID == "lamp")
         let long = BridgedDeviceInfo(id: "PhilipsHue:00000000-0000-0000-0000-000000000001", name: "A").uniqueID

@@ -135,12 +135,17 @@ public actor MatterNode {
             })
         }
         await fabrics.onChange { await advertise($0) }
-        let layer = layer
+        let layer = layer, fabrics = fabrics, verifier = verifier
+        let discriminator = setupPayload.discriminator, timeout = configuration.initialWindowTimeout
         await commissioning.onFabricRemoved { index, delay in
             await resumptions.removeFabric(index)
             Task {
                 if delay > .zero { try? await Task.sleep(for: delay) }
                 await layer.removeSessions { $0.fabricIndex == index }
+            }
+            // With no fabric left the node is commissionable again, as connectedhomeip's server does.
+            if await fabrics.count == 0, await commissioning.windowStatus == .closed {
+                await commissioning.open(.basic, verifier: verifier, discriminator: discriminator, timeout: timeout)
             }
         }
         await advertise(await fabrics.all)

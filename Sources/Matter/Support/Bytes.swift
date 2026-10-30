@@ -52,3 +52,17 @@ struct ByteReader {
         try take(MemoryLayout<T>.size).reversed().reduce(T.zero) { $0 << 8 | T(truncatingIfNeeded: $1) }
     }
 }
+
+extension String {
+    /// The longest prefix of whole characters that fits in `bytes` bytes of UTF-8: Matter limits strings by bytes.
+    func utf8Prefix(_ bytes: Int) -> String {
+        var count = 0
+        var end = startIndex
+        for character in self {
+            count += character.utf8.count
+            guard count <= bytes else { break }
+            end = index(after: end)
+        }
+        return String(self[..<end])
+    }
+}

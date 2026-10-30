@@ -82,8 +82,11 @@ struct CommissioningTests {
     @Test func removesAFabricFromTheNode() async throws {
         let fixture = try await CommissioningFixture()
         _ = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)
+        #expect(await fixture.node.commissioning.windowStatus == .closed)
         try await fixture.node.removeFabric(1)
         #expect(await fixture.node.fabrics.count == 0)
+        // Without a fabric the node can be commissioned again.
+        #expect(await fixture.node.commissioning.windowStatus == .basic)
         #expect(await fixture.node.accessControl.all.isEmpty)
         try await eventually { await fixture.node.layer.sessions.isEmpty }
         await #expect(throws: FabricError.unknown(1)) { try await fixture.node.removeFabric(1) }

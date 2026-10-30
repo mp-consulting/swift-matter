@@ -288,7 +288,7 @@ public actor BridgedDevice {
     }
 
     public func setName(_ name: String) async {
-        await basicInformation.set(BridgedDeviceBasicInformationCluster.Attribute.nodeLabel, .utf8(String(name.prefix(32))))
+        await basicInformation.set(BridgedDeviceBasicInformationCluster.Attribute.nodeLabel, .utf8(name.utf8Prefix(32)))
     }
 }
 
@@ -393,7 +393,7 @@ public actor MatterBridge {
 
     static func basicInformation(_ info: BridgedDeviceInfo) -> AttributeCluster {
         typealias A = BridgedDeviceBasicInformationCluster.Attribute
-        func label(_ text: String) -> TLVValue { .utf8(String(text.prefix(32))) }
+        func label(_ text: String) -> TLVValue { .utf8(text.utf8Prefix(32)) }
         var attributes: [AttributeID: TLVValue] = [
             A.nodeLabel: label(info.name), A.reachable: .bool(true), A.uniqueId: .utf8(info.uniqueID), A.configurationVersion: .unsigned(1),
         ]
