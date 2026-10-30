@@ -1,6 +1,6 @@
-"""Commissions a running matter-bridge-demo with connectedhomeip's Python controller and drives it: the check that
-another implementation accepts this one. Run through `bin/dev interop-python`, which installs the controller
-(home-assistant-chip-core, a build of connectedhomeip) in a virtual environment of its own.
+"""Commissions the matter-bridge-demo that `bin/dev interop-python` starts with connectedhomeip's Python controller,
+and drives it: the check that another implementation accepts this one. `bin/dev interop-python` installs the
+controller (home-assistant-chip-core, a build of connectedhomeip) in a virtual environment of its own; CI runs it.
 
 Usage: python interop.py <work directory>
 """

@@ -36,8 +36,8 @@ development commands.
 
 ## Interoperability
 
-`bin/dev interop-python` commissions the running demo with connectedhomeip's own controller (Home Assistant's build,
-2025.7.0) and drives it. On macOS 27 it passes: discovery over DNS-SD, PASE, device attestation against the test PAA,
+`bin/dev interop-python` (and CI, on every change) runs the demo, commissions it with connectedhomeip's own
+controller (Home Assistant's build, 2025.7.0) and drives it. On macOS 27 it passes: discovery over DNS-SD, PASE, device attestation against the test PAA,
 the operational certificate and CASE, reads (and a wildcard read across the bridged devices), invokes, a subscription
 report and the fabric list. Apple Home, Google Home and Alexa have not been tried yet.
 

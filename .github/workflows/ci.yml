@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   macos:
@@ -24,3 +25,14 @@ jobs:
         run: swift test
       - name: Lint
         run: bin/dev lint
+
+  interop:
+    # connectedhomeip's own controller commissions the demo and drives it (bin/dev interop-python). macOS: the
+    # controller's wheels find the demo over the system's DNS-SD there, without an Avahi daemon to run.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Commission the demo with connectedhomeip's controller
+        timeout-minutes: 20
+        run: bin/dev interop-python
