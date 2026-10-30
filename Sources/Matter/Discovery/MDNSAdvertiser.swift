@@ -109,6 +109,10 @@ public actor MDNSAdvertiser: NodeAdvertiser {
     /// The records by name, rebuilt when they change rather than for every query.
     private var index: [DNSName: [DNSRecord]] = [:]
     private var channels: [Channel] = []
+    /// The interface each channel listens on, and the interface of each link-local address: a link-local address
+    /// means something only on its own link, so it is answered only there (RFC 6762 §6.2).
+    private var channelInterfaces: [ObjectIdentifier: Int] = [:]
+    private var linkLocalInterfaces: [[UInt8]: Int] = [:]
     private var started = false
 
     /// `hostName` is the label of `<hostName>.local`; a random one by default.
@@ -169,11 +173,16 @@ public actor MDNSAdvertiser: NodeAdvertiser {
     private func start() async {
         started = true
         let devices = (try? System.enumerateDevices()) ?? []
+        // The loopback interface's addresses (fe80::1 on lo0 among them) reach no other host.
         records.addresses = devices.compactMap { device -> DNSRecord.Data? in
-            guard device.multicastSupported, let address = device.address, address.ipAddress.map(Self.isRoutable) == true else { return nil }
+            guard device.multicastSupported, !Self.isLoopback(device), let address = device.address,
+                  address.ipAddress.map(Self.isRoutable) == true else { return nil }
             switch address {
             case .v4(let v4): return .a(withUnsafeBytes(of: v4.address.sin_addr) { Array($0) })
-            case .v6(let v6): return .aaaa(withUnsafeBytes(of: v6.address.sin6_addr) { Array($0) })
+            case .v6(let v6):
+                let bytes = withUnsafeBytes(of: v6.address.sin6_addr) { Array($0) }
+                if Self.isLinkLocal(bytes) { linkLocalInterfaces[bytes] = device.interfaceIndex }
+                return .aaaa(bytes)
             default: return nil
             }
         }.uniqued()
@@ -181,12 +190,29 @@ public actor MDNSAdvertiser: NodeAdvertiser {
         for device in devices where device.multicastSupported {
             guard let address = device.address else { continue }
             let isV6 = address.protocol == .inet6
-            if let channel = await bind(device: device, ipv6: isV6) { channels.append(channel) }
+            if let channel = await bind(device: device, ipv6: isV6) {
+                channels.append(channel)
+                channelInterfaces[ObjectIdentifier(channel)] = device.interfaceIndex
+            }
         }
         if channels.isEmpty { logger.warning("mDNS: no multicast interface to advertise on") }
     }
 
     static func isRoutable(_ ip: String) -> Bool { !(ip.hasPrefix("127.") || ip == "::1") }
+
+    static func isLoopback(_ device: NIONetworkDevice) -> Bool { device.name.hasPrefix("lo") }
+
+    /// fe80::/10.
+    static func isLinkLocal(_ bytes: [UInt8]) -> Bool { bytes.count == 16 && bytes[0] == 0xFE && bytes[1] & 0xC0 == 0x80 }
+
+    /// The records for one link: a link-local address only on its own interface.
+    private func forLink(_ records: [DNSRecord], on channel: Channel) -> [DNSRecord] {
+        let interface = channelInterfaces[ObjectIdentifier(channel)]
+        return records.filter { record in
+            guard case .aaaa(let bytes) = record.data, let owner = linkLocalInterfaces[bytes] else { return true }
+            return owner == interface
+        }
+    }
 
     private func bind(device: NIONetworkDevice, ipv6: Bool) async -> Channel? {
         let groupAddress = ipv6 ? "ff02::fb" : "224.0.0.251"
@@ -221,17 +247,20 @@ public actor MDNSAdvertiser: NodeAdvertiser {
     }
 
     private func send(_ message: DNSMessage) async {
-        let bytes = message.encode()
         for channel in channels {
             let ipv6 = channel.localAddress?.protocol == .inet6
             guard let destination = try? SocketAddress(ipAddress: ipv6 ? "ff02::fb" : "224.0.0.251", port: Self.port) else { continue }
-            try? await channel.writeAndFlush(AddressedEnvelope(remoteAddress: destination, data: channel.allocator.buffer(bytes: bytes)))
+            var local = message
+            local.answers = forLink(message.answers, on: channel)
+            local.additionals = forLink(message.additionals, on: channel)
+            try? await channel.writeAndFlush(AddressedEnvelope(remoteAddress: destination, data: channel.allocator.buffer(bytes: local.encode())))
         }
     }
 
     private func receive(_ bytes: [UInt8], from sender: SocketAddress, on channel: Channel) async {
         guard let query = try? DNSMessage(bytes: bytes), !query.isResponse, !query.questions.isEmpty else { return }
-        let (answers, additionals) = MatterRecords.answer(query.questions, index: index, host: records.host)
+        let (found, extra) = MatterRecords.answer(query.questions, index: index, host: records.host)
+        let answers = forLink(found, on: channel), additionals = forLink(extra, on: channel)
         guard !answers.isEmpty else { return }
         // A legacy querier (not from port 5353) gets a unicast reply that echoes its id and questions (RFC 6762 §6.7).
         let legacy = sender.port != Self.port

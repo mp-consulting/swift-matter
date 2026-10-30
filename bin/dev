@@ -21,6 +21,7 @@ Usage: bin/dev <command> [arguments]
   demo [args]           Run matter-bridge-demo (a bridge of virtual lights and sensors)
   bench [args]          Run matter-bench in release: commissioning, sessions, reads, invokes, reports, memory
   interop [args]        Commission the running demo with chip-tool and drive its devices (Scripts/interop.sh)
+  interop-python        The same with connectedhomeip's Python controller, installed in its own venv (Scripts/interop.py)
   generate CHECKOUT     Regenerate Sources/Matter/DataModel/Definitions.swift from a matter.js checkout
   lint                  Check for trailing whitespace, tabs and stray debugging prints
   clean                 Remove the build directory
@@ -47,6 +48,17 @@ case "$command" in
     demo) "${SWIFT[@]}" run --scratch-path "$SCRATCH" matter-bridge-demo "$@" ;;
     bench) "${SWIFT[@]}" run --scratch-path "$SCRATCH" -c release matter-bench "$@" ;;
     interop) Scripts/interop.sh "$@" ;;
+    interop-python)
+        # connectedhomeip's controller as Home Assistant builds it, pinned, in a venv beside the build directory.
+        venv="$SCRATCH/../swift-matter-interop"
+        if [[ ! -x "$venv/bin/python" ]]; then
+            uv venv -q --python 3.12 "$venv"
+            uv pip install -q --python "$venv/bin/python" home-assistant-chip-core==2025.7.0 home-assistant-chip-clusters==2025.7.0
+        fi
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        "$venv/bin/python" Scripts/interop.py "$work"
+        ;;
     generate)
         [[ $# -eq 1 ]] || { echo "Usage: bin/dev generate <matter.js checkout>" >&2; exit 1; }
         node Scripts/generate-clusters.mjs "$1" > Sources/Matter/DataModel/Definitions.swift

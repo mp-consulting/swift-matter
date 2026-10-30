@@ -58,4 +58,13 @@ struct DiscoveryTests {
         }
         return entries
     }
+
+    /// A link-local address is answered only on its own link, and the loopback interface's not at all (RFC 6762 §6.2):
+    /// a controller hearing lo0's fe80::1 on en5 would scope it to en5, where it is no one.
+    @Test func keepsLinkLocalAddressesOnTheirLink() {
+        #expect(MDNSAdvertiser.isLinkLocal([0xFE, 0x80] + Array(repeating: 0, count: 13) + [1]))
+        #expect(MDNSAdvertiser.isLinkLocal([0xFE, 0xBF] + Array(repeating: 0, count: 14)))
+        #expect(!MDNSAdvertiser.isLinkLocal([0xFD, 0x48] + Array(repeating: 0, count: 14)))
+        #expect(!MDNSAdvertiser.isLinkLocal([0xFE, 0xC0] + Array(repeating: 0, count: 14)))
+    }
 }

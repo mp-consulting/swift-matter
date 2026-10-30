@@ -561,7 +561,9 @@ public actor MessageLayer {
             return
         }
         let challenge = MatterCrypto.random(8), exchangeID = allocateExchangeID()
-        let jitter = reliability.scaled(Self.syncJitter * Double.random(in: 0...1)), timeout = reliability.scaled(Self.syncTimeout)
+        // The jitter scales with MRP's timings (tests shrink it); the wait for the answer is the spec's, so an answer
+        // that takes a scheduling round trip is never too late.
+        let jitter = reliability.scaled(Self.syncJitter * Double.random(in: 0...1)), timeout = Self.syncTimeout
         let task = Task { [weak self] in
             guard (try? await Task.sleep(for: jitter)) != nil else { return }
             // Sent reliably: once more halfway through the wait, in case the first one was lost.

@@ -34,11 +34,18 @@ await lamp.update(.on(true))   // the lamp changed on its own
 `bin/dev demo` runs a bridge of virtual devices, `bin/dev bench` measures one ([Benchmarks.md](Benchmarks.md)); see [CLAUDE.md](CLAUDE.md) for the layout and `bin/dev help` for the
 development commands.
 
+## Interoperability
+
+`bin/dev interop-python` commissions the running demo with connectedhomeip's own controller (Home Assistant's build,
+2025.7.0) and drives it. On macOS 27 it passes: discovery over DNS-SD, PASE, device attestation against the test PAA,
+the operational certificate and CASE, reads (and a wildcard read across the bridged devices), invokes, a subscription
+report and the fabric list. Apple Home, Google Home and Alexa have not been tried yet.
+
 ## Limits
 
 - Matter over IP only: no Bluetooth (BTP), Thread or Wi-Fi PAF commissioning; the node must already be on the network.
-- Groups take trust-first and cache-and-sync keys (MCSP); no Groupcast cluster. MCSP messages are not retransmitted. No
-  OTA (it needs a vendor ID of its own), no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`) is off by default.
+- Groups take trust-first and cache-and-sync keys (MCSP); no Groupcast cluster. No OTA (it needs a vendor ID of its own),
+  no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`) is off by default.
 - Scenes are reported with an empty table; level and color transitions complete at once.
 
 ## Certification
