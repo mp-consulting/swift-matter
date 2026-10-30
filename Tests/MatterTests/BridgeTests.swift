@@ -15,8 +15,6 @@ struct BridgeTests {
             session = try await base.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42).localSessionID
         }
 
-        var client: InteractionClient { get async { await base.commissioner.client } }
-
         func read(_ endpoint: EndpointNumber, _ cluster: ClusterID, _ attribute: AttributeID) async throws -> TLVValue {
             try await base.commissioner.client.read(endpoint: endpoint, cluster: cluster, attribute: attribute, session: session)
         }
@@ -114,5 +112,58 @@ struct BridgeTests {
         #expect(statuses.map(\.1.status) == [.success])
         #expect(await commands.values == [.setCoveringPosition(percent100ths: 2500), .setCoveringPosition(percent100ths: 10_000), .setFanSpeed(percent: 50)])
         #expect(try await fixture.read(3, FanControlCluster.id, FanControlCluster.Attribute.fanMode) == .unsigned(2))
+    }
+
+    @Test func composesDevicesFromParts() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        // A ceiling fan with a light: a Bridged Node with two child endpoints.
+        let fan = try await fixture.bridge.add(BridgedDeviceInfo(id: "ceiling-fan", name: "Ceiling fan"), parts: [
+            DevicePart(.fan) { await commands.append($0) },
+            DevicePart(.dimmableLight, tags: [SemanticTag(namespace: 0x07, tag: 0x00, label: "Light")]) { await commands.append($0) },
+        ], battery: false)
+        #expect(fan.endpoint == 2)
+        #expect(fan.partEndpoints == [3, 4])
+        #expect(try await fixture.read(2, DescriptorCluster.id, DescriptorCluster.Attribute.partsList) == .array([TLVElement(.unsigned(3)), TLVElement(.unsigned(4))]))
+        #expect(try await fixture.read(1, DescriptorCluster.id, DescriptorCluster.Attribute.partsList).elements?.count == 3)
+        let types = try await fixture.read(2, DescriptorCluster.id, DescriptorCluster.Attribute.deviceTypeList)
+        #expect(types.elements?.compactMap { $0.value[0]?.uint } == [UInt64(DeviceTypes.bridgedNode.id)])
+        #expect(try await fixture.read(4, DescriptorCluster.id, DescriptorCluster.Attribute.tagList).elements?.count == 1)
+
+        _ = try await fixture.invoke(4, OnOffCluster.id, OnOffCluster.Command.on)
+        #expect(await commands.values == [.setOn(true)])
+        await fan.update(.fanSpeed(percent: 40), part: 0)
+        #expect(try await fixture.read(3, FanControlCluster.id, FanControlCluster.Attribute.fanMode) == .unsigned(2))
+        await fan.update(.on(false), part: 1)
+        #expect(try await fixture.read(4, OnOffCluster.id, OnOffCluster.Attribute.onOff) == .bool(false))
+    }
+
+    @Test func acceptsCustomKindsAndRawAttributes() async throws {
+        let fixture = try await Fixture()
+        // A thermostat the presets do not model: the application gives its clusters.
+        let thermostat = DeviceKind(deviceTypes: [DeviceTypes.thermostat]) { _ in
+            [AttributeCluster(ThermostatCluster.definition, featureMap: ThermostatCluster.Feature.heating.rawValue, attributes: [
+                ThermostatCluster.Attribute.localTemperature: .signed(2000), ThermostatCluster.Attribute.systemMode: .unsigned(4),
+                ThermostatCluster.Attribute.controlSequenceOfOperation: .unsigned(2),
+                ThermostatCluster.Attribute.occupiedHeatingSetpoint: .signed(2100),
+            ])]
+        }
+        let device = try await fixture.bridge.add(BridgedDeviceInfo(id: "tado", name: "Radiator"), kind: thermostat)
+        await device.set([ThermostatCluster.Attribute.localTemperature: .signed(2150)], cluster: ThermostatCluster.id)
+        #expect(try await fixture.read(2, ThermostatCluster.id, ThermostatCluster.Attribute.localTemperature) == .signed(2150))
+        // Non-finite readings become null rather than trapping.
+        let sensor = try await fixture.bridge.add(BridgedDeviceInfo(id: "t", name: "T"), kind: .temperatureSensor)
+        await sensor.update(.temperature(.nan))
+        #expect(try await fixture.read(3, TemperatureMeasurementCluster.id, TemperatureMeasurementCluster.Attribute.measuredValue) == .null)
+    }
+
+    @Test func rejectsOversizedLevelSteps() async throws {
+        let fixture = try await Fixture()
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "l", name: "L"), kind: .dimmableLight)
+        let result = try await fixture.invoke(2, LevelControlCluster.id, LevelControlCluster.Command.step,
+                                              [.field(0, .unsigned(0)), .field(1, .unsigned(UInt64.max)), .field(2, .null),
+                                               .field(3, .unsigned(0)), .field(4, .unsigned(0))])
+        guard case .status(let status) = result else { Issue.record("Expected a status"); return }
+        #expect(status.status != .success)
     }
 }

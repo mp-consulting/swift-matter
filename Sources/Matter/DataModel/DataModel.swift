@@ -225,9 +225,11 @@ public actor DataModel {
     }
 
     private nonisolated var changeReporter: ChangeReporter {
-        ChangeReporter { [weak self] endpoint, cluster, attributes in
+        ChangeReporter(report: { [weak self] endpoint, cluster, attributes in
             self?.publish(.attributes(endpoint, cluster, attributes))
-        }
+        }, emit: { [weak self] endpoint, cluster, event, priority, data in
+            await self?.emit(endpoint: endpoint, cluster: cluster, event: event, priority: priority, data: data)
+        })
     }
 }
 

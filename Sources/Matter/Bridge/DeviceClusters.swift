@@ -57,18 +57,20 @@ enum DeviceClusters {
         @Sendable func status(_ command: CommandID, _ status: IMStatus, _ fields: TLVValue) -> InvokeResult {
             .response(command, .structure([.field(0, .unsigned(UInt64(status.rawValue))), .field(1, .unsigned(fields[0]?.uint ?? 0))]))
         }
-        await cluster.handle(C.addGroup) { _, fields, _ in status(GroupsCluster.Command.addGroupResponse, .resourceExhausted, fields) }
-        await cluster.handle(C.addGroupIfIdentifying) { _, _, _ in throw StatusError(.resourceExhausted) }
-        await cluster.handle(C.viewGroup) { _, fields, _ in
-            .response(GroupsCluster.Command.viewGroupResponse, .structure([
-                .field(0, .unsigned(UInt64(IMStatus.notFound.rawValue))), .field(1, .unsigned(fields[0]?.uint ?? 0)), .field(2, .utf8("")),
-            ]))
-        }
-        await cluster.handle(C.getGroupMembership) { _, _, _ in
-            .response(GroupsCluster.Command.getGroupMembershipResponse, .structure([.field(0, .null), .field(1, .array([]))]))
-        }
-        await cluster.handle(C.removeGroup) { _, fields, _ in status(GroupsCluster.Command.removeGroupResponse, .notFound, fields) }
-        await cluster.handle(C.removeAllGroups) { _, _, _ in .success }
+        await cluster.handle([
+            C.addGroup: { _, fields, _ in status(C.addGroupResponse, .resourceExhausted, fields) },
+            C.addGroupIfIdentifying: { _, _, _ in throw StatusError(.resourceExhausted) },
+            C.viewGroup: { _, fields, _ in
+                .response(C.viewGroupResponse, .structure([
+                    .field(0, .unsigned(UInt64(IMStatus.notFound.rawValue))), .field(1, .unsigned(fields[0]?.uint ?? 0)), .field(2, .utf8("")),
+                ]))
+            },
+            C.getGroupMembership: { _, _, _ in
+                .response(C.getGroupMembershipResponse, .structure([.field(0, .null), .field(1, .array([]))]))
+            },
+            C.removeGroup: { _, fields, _ in status(C.removeGroupResponse, .notFound, fields) },
+            C.removeAllGroups: { _, _, _ in .success },
+        ])
         return cluster
     }
 
@@ -78,10 +80,12 @@ enum DeviceClusters {
         typealias C = ScenesManagementCluster.Command
         let cluster = AttributeCluster(ScenesManagementCluster.definition, attributes: [A.sceneTableSize: .unsigned(16)])
         await cluster.provide(A.fabricSceneInfo) { context in
+            typealias Info = ScenesManagementCluster.SceneInfoStruct
             guard let fabric = context.fabricIndex else { return .array([]) }
             return .array([TLVElement(.structure([
-                .field(0, .unsigned(0)), .field(1, .unsigned(0)), .field(2, .unsigned(0)), .field(3, .bool(false)),
-                .field(4, .unsigned(16)), .field(fabricIndexFieldTag, .unsigned(UInt64(fabric))),
+                .field(Info.sceneCount, .unsigned(0)), .field(Info.currentScene, .unsigned(0)), .field(Info.currentGroup, .unsigned(0)),
+                .field(Info.sceneValid, .bool(false)), .field(Info.remainingCapacity, .unsigned(16)),
+                .field(Info.fabricIndex, .unsigned(UInt64(fabric))),
             ]))])
         }
         @Sendable func response(_ command: CommandID, _ status: IMStatus, _ fields: TLVValue, scene: Bool = true) -> InvokeResult {
@@ -89,23 +93,25 @@ enum DeviceClusters {
             if scene { result.append(.field(2, .unsigned(fields[1]?.uint ?? 0))) }
             return .response(command, .structure(result))
         }
-        await cluster.handle(C.addScene) { _, fields, _ in response(C.addSceneResponse, .resourceExhausted, fields) }
-        await cluster.handle(C.viewScene) { _, fields, _ in response(C.viewSceneResponse, .notFound, fields) }
-        await cluster.handle(C.removeScene) { _, fields, _ in response(C.removeSceneResponse, .notFound, fields) }
-        await cluster.handle(C.removeAllScenes) { _, fields, _ in response(C.removeAllScenesResponse, .success, fields, scene: false) }
-        await cluster.handle(C.storeScene) { _, fields, _ in response(C.storeSceneResponse, .resourceExhausted, fields) }
-        await cluster.handle(C.recallScene) { _, _, _ in throw StatusError(.notFound) }
-        await cluster.handle(C.getSceneMembership) { _, fields, _ in
-            .response(C.getSceneMembershipResponse, .structure([
-                .field(0, .unsigned(0)), .field(1, .unsigned(16)), .field(2, .unsigned(fields[0]?.uint ?? 0)), .field(3, .array([])),
-            ]))
-        }
-        await cluster.handle(C.copyScene) { _, fields, _ in
-            .response(C.copySceneResponse, .structure([
-                .field(0, .unsigned(UInt64(IMStatus.resourceExhausted.rawValue))), .field(1, .unsigned(fields[1]?.uint ?? 0)),
-                .field(2, .unsigned(fields[2]?.uint ?? 0)),
-            ]))
-        }
+        await cluster.handle([
+            C.addScene: { _, fields, _ in response(C.addSceneResponse, .resourceExhausted, fields) },
+            C.viewScene: { _, fields, _ in response(C.viewSceneResponse, .notFound, fields) },
+            C.removeScene: { _, fields, _ in response(C.removeSceneResponse, .notFound, fields) },
+            C.removeAllScenes: { _, fields, _ in response(C.removeAllScenesResponse, .success, fields, scene: false) },
+            C.storeScene: { _, fields, _ in response(C.storeSceneResponse, .resourceExhausted, fields) },
+            C.recallScene: { _, _, _ in throw StatusError(.notFound) },
+            C.getSceneMembership: { _, fields, _ in
+                .response(C.getSceneMembershipResponse, .structure([
+                    .field(0, .unsigned(0)), .field(1, .unsigned(16)), .field(2, .unsigned(fields[0]?.uint ?? 0)), .field(3, .array([])),
+                ]))
+            },
+            C.copyScene: { _, fields, _ in
+                .response(C.copySceneResponse, .structure([
+                    .field(0, .unsigned(UInt64(IMStatus.resourceExhausted.rawValue))), .field(1, .unsigned(fields[1]?.uint ?? 0)),
+                    .field(2, .unsigned(fields[2]?.uint ?? 0)),
+                ]))
+            },
+        ])
         return cluster
     }
 
@@ -163,9 +169,11 @@ enum DeviceClusters {
             return .success
         }
         @Sendable func step(_ cluster: AttributeCluster, _ fields: TLVValue, withOnOff: Bool) async throws -> InvokeResult {
+            // StepMode and StepSize are 8-bit (§1.6.7.3): narrowed so a large peer value cannot overflow.
+            let request = try TLVStruct(fields)
             let current = await cluster.value(A.currentLevel)?.uint ?? 254
-            let size = fields[1]?.uint ?? 0
-            let target = fields[0]?.uint == 0 ? current + size : (current > size ? current - size : 1)
+            let size = UInt64(try request.uint(1, as: UInt8.self))
+            let target = try request.uint(0, as: UInt8.self) == 0 ? current + size : (current > size ? current - size : 1)
             return try await moveTo(cluster, target, withOnOff: withOnOff)
         }
         @Sendable func move(_ cluster: AttributeCluster, _ fields: TLVValue, withOnOff: Bool) async throws -> InvokeResult {
@@ -205,14 +213,10 @@ enum DeviceClusters {
         }
         let cluster = AttributeCluster(ColorControlCluster.definition, featureMap: features.rawValue, attributes: attributes)
 
-        @Sendable func mode(_ cluster: AttributeCluster, _ mode: UInt64) async {
-            await cluster.set([A.colorMode: .unsigned(mode), A.enhancedColorMode: .unsigned(mode)])
-        }
         await cluster.handle(C.moveToColorTemperature) { cluster, fields, _ in
             let mireds = UInt16(clamping: min(max(try TLVStruct(fields).uint(0), UInt64(temperatureRange.lowerBound)), UInt64(temperatureRange.upperBound)))
             try await deliver(.setColorTemperature(mireds: mireds), to: handler)
-            await cluster.set(A.colorTemperatureMireds, .unsigned(UInt64(mireds)))
-            await mode(cluster, 2)
+            await cluster.set(colorTemperatureValues(mireds))
             return .success
         }
         await cluster.handle(C.stopMoveStep) { _, _, _ in .success }
@@ -226,8 +230,7 @@ enum DeviceClusters {
             let newHue = UInt8(min(254, hue ?? currentHue))
             let newSaturation = UInt8(min(254, saturation ?? currentSaturation))
             try await deliver(.setHueSaturation(hue: newHue, saturation: newSaturation), to: handler)
-            await cluster.set([A.currentHue: .unsigned(UInt64(newHue)), A.currentSaturation: .unsigned(UInt64(newSaturation))])
-            await mode(cluster, 0)
+            await cluster.set(hueSaturationValues(hue: newHue, saturation: newSaturation))
             return .success
         }
         await cluster.handle(C.moveToHue) { cluster, fields, _ in try await hueSat(cluster, hue: try TLVStruct(fields).uint(0), saturation: nil) }
@@ -240,8 +243,8 @@ enum DeviceClusters {
             let request = try TLVStruct(fields)
             let x = try request.uint(0, as: UInt16.self), y = try request.uint(1, as: UInt16.self)
             try await deliver(.setColorXY(x: x, y: y), to: handler)
-            await cluster.set([A.currentX: .unsigned(UInt64(x)), A.currentY: .unsigned(UInt64(y))])
-            await mode(cluster, 1)
+            await cluster.set([A.currentX: .unsigned(UInt64(x)), A.currentY: .unsigned(UInt64(y)), A.colorMode: .unsigned(1),
+                               A.enhancedColorMode: .unsigned(1)])
             return .success
         }
         for command in [C.moveHue, C.stepHue, C.moveSaturation, C.stepSaturation, C.moveColor, C.stepColor] {
@@ -250,10 +253,25 @@ enum DeviceClusters {
         return cluster
     }
 
+    /// A color temperature and the color mode it puts the light in (ColorMode 2).
+    static func colorTemperatureValues(_ mireds: UInt16) -> [AttributeID: TLVValue] {
+        typealias A = ColorControlCluster.Attribute
+        return [A.colorTemperatureMireds: .unsigned(UInt64(mireds)), A.colorMode: .unsigned(2), A.enhancedColorMode: .unsigned(2)]
+    }
+
+    /// A hue and saturation and the color mode they put the light in (ColorMode 0).
+    static func hueSaturationValues(hue: UInt8, saturation: UInt8) -> [AttributeID: TLVValue] {
+        typealias A = ColorControlCluster.Attribute
+        return [A.currentHue: .unsigned(UInt64(min(hue, 254))), A.currentSaturation: .unsigned(UInt64(min(saturation, 254))),
+                A.colorMode: .unsigned(0), A.enhancedColorMode: .unsigned(0)]
+    }
+
     // MARK: - Sensors (§2)
 
+    /// The measurement clusters share their layout: MeasuredValue (0), MinMeasuredValue (1), MaxMeasuredValue (2).
     static func measurement(_ definition: ClusterDefinition, value: TLVValue, minimum: TLVValue, maximum: TLVValue) -> AttributeCluster {
-        AttributeCluster(definition, attributes: [0x0000: value, 0x0001: minimum, 0x0002: maximum])
+        typealias A = TemperatureMeasurementCluster.Attribute
+        return AttributeCluster(definition, attributes: [A.measuredValue: value, A.minMeasuredValue: minimum, A.maxMeasuredValue: maximum])
     }
 
     static func booleanState() -> AttributeCluster {
@@ -307,30 +325,40 @@ enum DeviceClusters {
             case A.percentSetting:
                 guard let raw = value.uint, raw <= 100 else { throw StatusError(.constraintError) }
                 percent = UInt8(raw)
-                await cluster.set(A.fanMode, .unsigned(percent == 0 ? 0 : percent <= 33 ? 1 : percent <= 66 ? 2 : 3))
             case A.fanMode:
                 // Off 0, Low 1, Medium 2, High 3, On 4 (high), Auto 5 (unsupported), Smart 6 (high).
                 guard let mode = value.uint, mode <= 6, mode != 5 else { throw StatusError(.constraintError) }
                 percent = [0, 33, 66, 100, 100, 100, 100][Int(mode)]
-                await cluster.set(A.percentSetting, .unsigned(UInt64(percent)))
             default:
                 throw StatusError(.unsupportedWrite)
             }
             try await deliver(.setFanSpeed(percent: percent), to: handler)
-            await cluster.set(A.percentCurrent, .unsigned(UInt64(percent)))
+            // The written attribute is stored by the cluster after this hook; the others follow it.
+            var values = fanValues(percent: percent)
+            values[attribute] = nil
+            await cluster.set(values)
         }
         return cluster
     }
 
+    /// The fan attributes for a speed: the setting, the current speed, and the mode it falls in.
+    static func fanValues(percent: UInt8) -> [AttributeID: TLVValue] {
+        typealias A = FanControlCluster.Attribute
+        let clamped = UInt64(min(percent, 100))
+        return [A.percentSetting: .unsigned(clamped), A.percentCurrent: .unsigned(clamped),
+                A.fanMode: .unsigned(clamped == 0 ? 0 : clamped <= 33 ? 1 : clamped <= 66 ? 2 : 3)]
+    }
+
     // MARK: - Power Source (§11.7), a battery
 
-    static func battery() -> AttributeCluster {
+    static func battery(endpoint: EndpointNumber) -> AttributeCluster {
         typealias A = PowerSourceCluster.Attribute
         let features = PowerSourceCluster.Feature([.battery, .replaceable])
         return AttributeCluster(PowerSourceCluster.definition, featureMap: features.rawValue, attributes: [
             A.status: .unsigned(1), A.order: .unsigned(0), A.description: .utf8("Battery"), A.batChargeLevel: .unsigned(0),
             A.batReplacementNeeded: .bool(false), A.batReplaceability: .unsigned(0), A.batPercentRemaining: .null,
-            A.activeBatFaults: .array([]), A.batReplacementDescription: .utf8(""), A.batQuantity: .unsigned(1), A.endpointList: .array([]),
+            A.activeBatFaults: .array([]), A.batReplacementDescription: .utf8(""), A.batQuantity: .unsigned(1),
+            A.endpointList: .array([TLVElement(.unsigned(UInt64(endpoint)))]),
         ])
     }
 }

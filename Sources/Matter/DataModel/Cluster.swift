@@ -28,11 +28,17 @@ public enum InvokeResult: Sendable {
     public static let success = InvokeResult.status(StatusError(.success))
 }
 
-/// Reports attribute changes to subscriptions; installed on a cluster when it is added to an endpoint.
+/// Reports attribute changes and records events; installed on a cluster when it is added to an endpoint.
 public struct ChangeReporter: Sendable {
     let report: @Sendable (_ endpoint: EndpointNumber, _ cluster: ClusterID, _ attributes: [AttributeID]) -> Void
+    let emit: @Sendable (_ endpoint: EndpointNumber, _ cluster: ClusterID, _ event: EventID, _ priority: EventDefinition.Priority,
+                         _ data: TLVValue) async -> Void
 
-    public init(report: @escaping @Sendable (EndpointNumber, ClusterID, [AttributeID]) -> Void) { self.report = report }
+    public init(report: @escaping @Sendable (EndpointNumber, ClusterID, [AttributeID]) -> Void,
+                emit: @escaping @Sendable (EndpointNumber, ClusterID, EventID, EventDefinition.Priority, TLVValue) async -> Void = { _, _, _, _, _ in }) {
+        self.report = report
+        self.emit = emit
+    }
 
     public static let none = ChangeReporter { _, _, _ in }
 }
@@ -151,6 +157,9 @@ public actor AttributeCluster: ClusterHandler {
 
     public func handle(_ command: CommandID, _ handler: @escaping CommandHandler) { commands[command] = handler }
 
+    /// Several command handlers at once.
+    public func handle(_ handlers: [CommandID: CommandHandler]) { commands.merge(handlers) { $1 } }
+
     /// Called before a write is stored; throw to reject it, or store something else with `set`.
     public func onWrite(_ hook: @escaping WriteHook) { writeHook = hook }
 
@@ -177,6 +186,11 @@ public actor AttributeCluster: ClusterHandler {
     }
 
     public func set(_ attribute: AttributeID, _ value: TLVValue) { set([attribute: value]) }
+
+    /// Records one of the cluster's events (Core §7.14), at the priority its definition gives unless told otherwise.
+    public func emit(_ event: EventID, data: TLVValue, priority: EventDefinition.Priority? = nil) async {
+        await reporter.emit(endpoint, definition.id, event, priority ?? definition.event(event)?.priority ?? .info, data)
+    }
 
     /// Reports a computed attribute as changed.
     public func changed(_ attributes: [AttributeID]) {

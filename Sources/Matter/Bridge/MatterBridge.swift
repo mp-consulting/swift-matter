@@ -1,46 +1,90 @@
 import Foundation
 
-/// A bridge (Core §9.12): an Aggregator endpoint whose parts are bridged devices, each a Bridged Node with its device
-/// type's clusters and a Bridged Device Basic Information cluster.
+/// A bridge (Core §9.12): an Aggregator endpoint whose parts are bridged devices. A device is a Bridged Node endpoint
+/// with Bridged Device Basic Information; its functions are on that endpoint, or on child endpoints when it has several
+/// (a fan with a light, a power strip), as compound devices are (Core §9.12.2.1).
 
-/// The kinds of devices the bridge can expose, with the device types they map to (Device Library).
-public enum BridgedDeviceKind: Hashable, Sendable {
-    case onOffLight
-    case dimmableLight
-    case colorTemperatureLight(mireds: ClosedRange<UInt16>)
-    case extendedColorLight(mireds: ClosedRange<UInt16>)
-    case onOffPlug
-    case dimmablePlug
-    case contactSensor
-    case occupancySensor
-    case temperatureSensor
-    case humiditySensor
-    case lightSensor
-    case windowCovering
-    case fan
+/// A function a bridged device offers: its device types and the clusters that serve them. The presets cover common
+/// devices; anything else (a thermostat, a lock, a vendor cluster) is a kind with its own clusters.
+public struct DeviceKind: Sendable {
+    public var deviceTypes: [DeviceType]
+    /// Builds the clusters; their commands go to the handler.
+    public var makeClusters: @Sendable (_ handler: @escaping DeviceCommandHandler) async -> [any ClusterHandler]
 
-    public var deviceType: DeviceType {
-        switch self {
-        case .onOffLight: DeviceTypes.onOffLight
-        case .dimmableLight: DeviceTypes.dimmableLight
-        case .colorTemperatureLight: DeviceTypes.colorTemperatureLight
-        case .extendedColorLight: DeviceTypes.extendedColorLight
-        case .onOffPlug: DeviceTypes.onOffPlugInUnit
-        case .dimmablePlug: DeviceTypes.dimmablePlugInUnit
-        case .contactSensor: DeviceTypes.contactSensor
-        case .occupancySensor: DeviceTypes.occupancySensor
-        case .temperatureSensor: DeviceTypes.temperatureSensor
-        case .humiditySensor: DeviceTypes.humiditySensor
-        case .lightSensor: DeviceTypes.lightSensor
-        case .windowCovering: DeviceTypes.windowCovering
-        case .fan: DeviceTypes.fan
+    public init(deviceTypes: [DeviceType], makeClusters: @escaping @Sendable (_ handler: @escaping DeviceCommandHandler) async -> [any ClusterHandler]) {
+        self.deviceTypes = deviceTypes
+        self.makeClusters = makeClusters
+    }
+
+    /// Identify, and Groups and Scenes Management for devices that act (Device Library §4-5).
+    static func base(_ handler: @escaping DeviceCommandHandler, actuator: Bool) async -> [any ClusterHandler] {
+        var clusters: [any ClusterHandler] = [await DeviceClusters.identify(handler)]
+        if actuator { clusters += [await DeviceClusters.groups(), await DeviceClusters.scenes()] }
+        return clusters
+    }
+
+    /// Lights and plugs: On/Off, and Level Control and Color Control as the type needs.
+    static func switched(_ type: DeviceType, lighting: Bool, dimmable: Bool, color: (range: ClosedRange<UInt16>, hueSaturation: Bool)? = nil) -> DeviceKind {
+        DeviceKind(deviceTypes: [type]) { handler in
+            let onOff = await DeviceClusters.onOff(lighting: lighting, handler)
+            var clusters = await base(handler, actuator: true) + [onOff]
+            if dimmable { clusters.append(await DeviceClusters.levelControl(onOff: onOff, handler)) }
+            if let color {
+                clusters.append(await DeviceClusters.colorControl(hueSaturation: color.hueSaturation, temperatureRange: color.range, handler))
+            }
+            return clusters
         }
+    }
+
+    static func sensor(_ type: DeviceType, _ make: @escaping @Sendable () -> any ClusterHandler) -> DeviceKind {
+        DeviceKind(deviceTypes: [type]) { handler in await base(handler, actuator: false) + [make()] }
+    }
+
+    public static let onOffLight = switched(DeviceTypes.onOffLight, lighting: true, dimmable: false)
+    public static let dimmableLight = switched(DeviceTypes.dimmableLight, lighting: true, dimmable: true)
+    public static func colorTemperatureLight(mireds: ClosedRange<UInt16>) -> DeviceKind {
+        switched(DeviceTypes.colorTemperatureLight, lighting: true, dimmable: true, color: (mireds, false))
+    }
+    public static func extendedColorLight(mireds: ClosedRange<UInt16>) -> DeviceKind {
+        switched(DeviceTypes.extendedColorLight, lighting: true, dimmable: true, color: (mireds, true))
+    }
+    public static let onOffPlug = switched(DeviceTypes.onOffPlugInUnit, lighting: false, dimmable: false)
+    public static let dimmablePlug = switched(DeviceTypes.dimmablePlugInUnit, lighting: false, dimmable: true)
+    public static let contactSensor = sensor(DeviceTypes.contactSensor) { DeviceClusters.booleanState() }
+    public static let occupancySensor = sensor(DeviceTypes.occupancySensor) { DeviceClusters.occupancySensing() }
+    public static let temperatureSensor = sensor(DeviceTypes.temperatureSensor) {
+        DeviceClusters.measurement(TemperatureMeasurementCluster.definition, value: .null, minimum: .signed(-5000), maximum: .signed(10000))
+    }
+    public static let humiditySensor = sensor(DeviceTypes.humiditySensor) {
+        DeviceClusters.measurement(RelativeHumidityMeasurementCluster.definition, value: .null, minimum: .unsigned(0), maximum: .unsigned(10000))
+    }
+    public static let lightSensor = sensor(DeviceTypes.lightSensor) {
+        DeviceClusters.measurement(IlluminanceMeasurementCluster.definition, value: .null, minimum: .unsigned(1), maximum: .unsigned(0xFFFE))
+    }
+    public static let windowCovering = DeviceKind(deviceTypes: [DeviceTypes.windowCovering]) { handler in
+        await base(handler, actuator: false) + [await DeviceClusters.windowCovering(handler)]
+    }
+    public static let fan = DeviceKind(deviceTypes: [DeviceTypes.fan]) { handler in
+        await base(handler, actuator: false) + [await DeviceClusters.groups(), await DeviceClusters.fanControl(handler)]
+    }
+}
+
+/// One function of a device, with the handler of its commands and tags that tell it from the device's other parts.
+public struct DevicePart: Sendable {
+    public var kind: DeviceKind
+    public var tags: [SemanticTag]
+    public var handler: DeviceCommandHandler
+
+    public init(_ kind: DeviceKind, tags: [SemanticTag] = [], handler: @escaping DeviceCommandHandler = { _ in }) {
+        self.kind = kind
+        self.tags = tags
+        self.handler = handler
     }
 }
 
 /// A bridged device's identity, shown in Bridged Device Basic Information (Core §9.13).
 public struct BridgedDeviceInfo: Hashable, Sendable {
-    /// Stable across restarts: it keeps the device's endpoint number, and is reported as UniqueID.
+    /// Stable across restarts: it keeps the device's endpoint numbers, and is reported as UniqueID.
     public var id: String
     public var name: String
     public var vendorName: String?
@@ -79,73 +123,83 @@ public enum DeviceState: Hashable, Sendable {
 /// A device on the bridge.
 public actor BridgedDevice {
     public nonisolated let info: BridgedDeviceInfo
-    public nonisolated let kind: BridgedDeviceKind
+    /// The Bridged Node endpoint.
     public nonisolated let endpoint: EndpointNumber
-    let clusters: [ClusterID: AttributeCluster]
-    let basicInformation: AttributeCluster
-    weak var dataModel: DataModel?
+    /// The endpoint of each part: the Bridged Node's own for a single part, children otherwise.
+    public nonisolated let partEndpoints: [EndpointNumber]
+    private let parts: [[any ClusterHandler]]
+    private let basicInformation: AttributeCluster
+    private let power: AttributeCluster?
 
-    init(info: BridgedDeviceInfo, kind: BridgedDeviceKind, endpoint: EndpointNumber, clusters: [AttributeCluster],
-         basicInformation: AttributeCluster, dataModel: DataModel) {
+    init(info: BridgedDeviceInfo, endpoint: EndpointNumber, partEndpoints: [EndpointNumber], parts: [[any ClusterHandler]],
+         basicInformation: AttributeCluster, power: AttributeCluster?) {
         self.info = info
-        self.kind = kind
         self.endpoint = endpoint
-        self.clusters = Dictionary(clusters.map { ($0.definition.id, $0) }) { first, _ in first }
+        self.partEndpoints = partEndpoints
+        self.parts = parts
         self.basicInformation = basicInformation
-        self.dataModel = dataModel
+        self.power = power
+    }
+
+    /// A part's stored-attribute cluster, for `set` and `emit` (nil for a custom handler that is not an `AttributeCluster`).
+    public func cluster(_ id: ClusterID, part: Int = 0) -> AttributeCluster? {
+        if id == PowerSourceCluster.id, let power { return power }
+        guard parts.indices.contains(part) else { return nil }
+        return parts[part].first { $0.id == id } as? AttributeCluster
+    }
+
+    /// Sets attributes of a part's cluster directly: for state the presets do not model.
+    public func set(_ values: [AttributeID: TLVValue], cluster id: ClusterID, part: Int = 0) async {
+        await cluster(id, part: part)?.set(values)
+    }
+
+    /// Records an event of a part's cluster.
+    public func emit(_ event: EventID, data: TLVValue, cluster id: ClusterID, part: Int = 0) async {
+        await cluster(id, part: part)?.emit(event, data: data)
     }
 
     /// Reports state the device changed on its own (or confirmed).
-    public func update(_ state: DeviceState) async {
+    public func update(_ state: DeviceState, part: Int = 0) async {
+        func set(_ cluster: ClusterID, _ values: [AttributeID: TLVValue]) async { await self.set(values, cluster: cluster, part: part) }
+        /// A finite reading scaled to the cluster's integer units, or nil.
+        func scaled(_ value: Double?, by factor: Double, in range: ClosedRange<Double>) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return min(max(value * factor, range.lowerBound), range.upperBound).rounded()
+        }
         switch state {
-        case .on(let on): await clusters[OnOffCluster.id]?.set(OnOffCluster.Attribute.onOff, .bool(on))
-        case .level(let level): await clusters[LevelControlCluster.id]?.set(LevelControlCluster.Attribute.currentLevel, .unsigned(UInt64(max(1, min(254, level)))))
-        case .colorTemperature(let mireds):
-            await clusters[ColorControlCluster.id]?.set([ColorControlCluster.Attribute.colorTemperatureMireds: .unsigned(UInt64(mireds)),
-                                                          ColorControlCluster.Attribute.colorMode: .unsigned(2),
-                                                          ColorControlCluster.Attribute.enhancedColorMode: .unsigned(2)])
-        case .hueSaturation(let hue, let saturation):
-            await clusters[ColorControlCluster.id]?.set([ColorControlCluster.Attribute.currentHue: .unsigned(UInt64(min(hue, 254))),
-                                                          ColorControlCluster.Attribute.currentSaturation: .unsigned(UInt64(min(saturation, 254))),
-                                                          ColorControlCluster.Attribute.colorMode: .unsigned(0),
-                                                          ColorControlCluster.Attribute.enhancedColorMode: .unsigned(0)])
+        case .on(let on): await set(OnOffCluster.id, [OnOffCluster.Attribute.onOff: .bool(on)])
+        case .level(let level): await set(LevelControlCluster.id, [LevelControlCluster.Attribute.currentLevel: .unsigned(UInt64(max(1, min(254, level))))])
+        case .colorTemperature(let mireds): await set(ColorControlCluster.id, DeviceClusters.colorTemperatureValues(mireds))
+        case .hueSaturation(let hue, let saturation): await set(ColorControlCluster.id, DeviceClusters.hueSaturationValues(hue: hue, saturation: saturation))
         case .contact(let closed):
-            let cluster = clusters[BooleanStateCluster.id]
-            if await cluster?.value(BooleanStateCluster.Attribute.stateValue) != .bool(closed) {
-                await cluster?.set(BooleanStateCluster.Attribute.stateValue, .bool(closed))
-                // StateChange (Application Clusters §1.7.5.1).
-                await dataModel?.emit(endpoint: endpoint, cluster: BooleanStateCluster.id, event: 0, priority: .info,
-                                      data: .structure([.field(0, .bool(closed))]))
-            }
+            let cluster = cluster(BooleanStateCluster.id, part: part)
+            guard await cluster?.value(BooleanStateCluster.Attribute.stateValue) != .bool(closed) else { return }
+            await cluster?.set(BooleanStateCluster.Attribute.stateValue, .bool(closed))
+            await cluster?.emit(BooleanStateCluster.Event.stateChange, data: .structure([.field(0, .bool(closed))]))
         case .occupied(let occupied):
-            await clusters[OccupancySensingCluster.id]?.set(OccupancySensingCluster.Attribute.occupancy, .unsigned(occupied ? 1 : 0))
+            await set(OccupancySensingCluster.id, [OccupancySensingCluster.Attribute.occupancy: .unsigned(occupied ? 1 : 0)])
         case .temperature(let celsius):
-            await clusters[TemperatureMeasurementCluster.id]?.set(0, celsius.map { .signed(Int64(($0 * 100).rounded())) } ?? .null)
+            let value = scaled(celsius, by: 100, in: -27315...32767).map { TLVValue.signed(Int64($0)) } ?? .null
+            await set(TemperatureMeasurementCluster.id, [TemperatureMeasurementCluster.Attribute.measuredValue: value])
         case .humidity(let percent):
-            await clusters[RelativeHumidityMeasurementCluster.id]?.set(0, percent.map { .unsigned(UInt64(max(0, min(100, $0)) * 100)) } ?? .null)
+            let value = scaled(percent, by: 100, in: 0...10000).map { TLVValue.unsigned(UInt64($0)) } ?? .null
+            await set(RelativeHumidityMeasurementCluster.id, [RelativeHumidityMeasurementCluster.Attribute.measuredValue: value])
         case .illuminance(let lux):
             // MeasuredValue = 10000 × log10(lux) + 1, 0 for darkness (Application Clusters §2.2.5.1).
-            let value: TLVValue = lux.map { $0 < 1 ? .unsigned(0) : .unsigned(UInt64(min(0xFFFE, (10_000 * log10($0) + 1).rounded()))) } ?? .null
-            await clusters[IlluminanceMeasurementCluster.id]?.set(0, value)
+            let value: TLVValue = lux.flatMap { $0.isFinite ? $0 : nil }.map {
+                $0 < 1 ? .unsigned(0) : .unsigned(UInt64(min(0xFFFE, (10_000 * log10($0) + 1).rounded())))
+            } ?? .null
+            await set(IlluminanceMeasurementCluster.id, [IlluminanceMeasurementCluster.Attribute.measuredValue: value])
         case .coveringPosition(let position):
             let clamped = UInt64(min(position, 10_000))
-            await clusters[WindowCoveringCluster.id]?.set([
-                WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths: .unsigned(clamped),
-                WindowCoveringCluster.Attribute.currentPositionLiftPercentage: .unsigned(clamped / 100),
-            ])
-        case .fanSpeed(let percent):
-            let clamped = UInt64(min(percent, 100))
-            await clusters[FanControlCluster.id]?.set([
-                FanControlCluster.Attribute.percentCurrent: .unsigned(clamped), FanControlCluster.Attribute.percentSetting: .unsigned(clamped),
-                FanControlCluster.Attribute.fanMode: .unsigned(clamped == 0 ? 0 : clamped <= 33 ? 1 : clamped <= 66 ? 2 : 3),
-            ])
+            await set(WindowCoveringCluster.id, [WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths: .unsigned(clamped),
+                                                 WindowCoveringCluster.Attribute.currentPositionLiftPercentage: .unsigned(clamped / 100)])
+        case .fanSpeed(let percent): await set(FanControlCluster.id, DeviceClusters.fanValues(percent: percent))
         case .battery(let percent):
             // BatPercentRemaining is in half percents; the charge level warns below 20 % and is critical below 10 %.
             let clamped = UInt64(min(percent, 100))
-            await clusters[PowerSourceCluster.id]?.set([
-                PowerSourceCluster.Attribute.batPercentRemaining: .unsigned(clamped * 2),
-                PowerSourceCluster.Attribute.batChargeLevel: .unsigned(clamped < 10 ? 2 : clamped < 20 ? 1 : 0),
-            ])
+            await power?.set([PowerSourceCluster.Attribute.batPercentRemaining: .unsigned(clamped * 2),
+                              PowerSourceCluster.Attribute.batChargeLevel: .unsigned(clamped < 10 ? 2 : clamped < 20 ? 1 : 0)])
         }
     }
 
@@ -153,9 +207,7 @@ public actor BridgedDevice {
     public func setReachable(_ reachable: Bool) async {
         guard await basicInformation.value(BridgedDeviceBasicInformationCluster.Attribute.reachable) != .bool(reachable) else { return }
         await basicInformation.set(BridgedDeviceBasicInformationCluster.Attribute.reachable, .bool(reachable))
-        // ReachableChanged event (Core §9.13.6.3).
-        await dataModel?.emit(endpoint: endpoint, cluster: BridgedDeviceBasicInformationCluster.id, event: 3, priority: .info,
-                              data: .structure([.field(0, .bool(reachable))]))
+        await basicInformation.emit(BridgedDeviceBasicInformationCluster.Event.reachableChanged, data: .structure([.field(0, .bool(reachable))]))
     }
 
     public func setName(_ name: String) async {
@@ -166,131 +218,111 @@ public actor BridgedDevice {
 public enum BridgeError: Error, Equatable, Sendable {
     case deviceExists(String)
     case unknownDevice(String)
+    case noParts
     case endpointsExhausted
 }
 
-/// A Matter bridge on a node: endpoint 1 is the Aggregator, bridged devices take endpoints from 2 up, persisted by
-/// device id and never reused (Core §9.2.10).
+/// A Matter bridge on a node: an Aggregator endpoint, and bridged devices on endpoints after it, persisted by device id
+/// and never reused (Core §9.2.10).
 public actor MatterBridge {
-    public static let aggregatorEndpoint: EndpointNumber = 1
     public let node: MatterNode
+    public nonisolated let aggregatorEndpoint: EndpointNumber
     private var devices: [String: BridgedDevice] = [:]
-    /// Every device id ever seen, with its endpoint.
+    /// Every endpoint ever given, by device id (a part's id is "<id>#<n>").
     private var endpoints: [String: EndpointNumber] = [:]
-    private var nextEndpoint: EndpointNumber = 2
+    private var nextEndpoint: EndpointNumber
 
-    public init(node: MatterNode) async throws {
+    public init(node: MatterNode, aggregatorEndpoint: EndpointNumber = 1) async throws {
         self.node = node
+        self.aggregatorEndpoint = aggregatorEndpoint
+        nextEndpoint = aggregatorEndpoint + 1
         if let data = await node.storage.value(for: StorageKey.bridgeEndpoints), let fields = try? TLVStruct(decoding: data) {
-            nextEndpoint = (try? fields.uint(1, as: UInt16.self)) ?? 2
+            nextEndpoint = (try? fields.uint(1, as: UInt16.self)) ?? nextEndpoint
             for entry in (try? fields.elements(2)) ?? [] {
                 if let id = entry.value[0]?.string, let number = entry.value[1]?.uint.flatMap(UInt16.init(exactly:)) { endpoints[id] = number }
             }
         }
-        try await node.add(Endpoint(number: Self.aggregatorEndpoint, deviceTypes: [DeviceTypes.aggregator], clusters: []))
+        try await node.add(Endpoint(number: aggregatorEndpoint, deviceTypes: [DeviceTypes.aggregator], clusters: []))
     }
 
     public var allDevices: [BridgedDevice] { devices.values.sorted { $0.endpoint < $1.endpoint } }
 
     public func device(_ id: String) -> BridgedDevice? { devices[id] }
 
-    /// Adds a device; its commands arrive at `handler`.
+    /// Adds a device with one function.
     @discardableResult
-    public func add(_ info: BridgedDeviceInfo, kind: BridgedDeviceKind, battery: Bool = false,
+    public func add(_ info: BridgedDeviceInfo, kind: DeviceKind, battery: Bool = false,
                     handler: @escaping DeviceCommandHandler = { _ in }) async throws -> BridgedDevice {
+        try await add(info, parts: [DevicePart(kind, handler: handler)], battery: battery)
+    }
+
+    /// Adds a device; several parts make a compound device with a child endpoint per part.
+    @discardableResult
+    public func add(_ info: BridgedDeviceInfo, parts: [DevicePart], battery: Bool = false) async throws -> BridgedDevice {
         guard devices[info.id] == nil else { throw BridgeError.deviceExists(info.id) }
-        let number = try await endpoint(for: info.id)
-        var clusters = await Self.clusters(for: kind, handler: handler)
+        guard !parts.isEmpty else { throw BridgeError.noParts }
+        var allocated = false
+        let top = try allocate(info.id, &allocated)
+        let partEndpoints = parts.count == 1 ? [top] : try parts.indices.map { try allocate("\(info.id)#\($0)", &allocated) }
+        if allocated { try await saveEndpoints() }
+
         let basicInformation = Self.basicInformation(info)
-        var deviceTypes = [kind.deviceType, DeviceTypes.bridgedNode]
-        if battery {
-            let power = DeviceClusters.battery()
-            await power.set(PowerSourceCluster.Attribute.endpointList, .array([TLVElement(.unsigned(UInt64(number)))]))
-            clusters.append(power)
-            deviceTypes.append(DeviceTypes.powerSource)
+        var partClusters: [[any ClusterHandler]] = []
+        for part in parts { partClusters.append(await part.kind.makeClusters(part.handler)) }
+        // A battery powers the whole device: its Power Source is on the Bridged Node (Core §9.12.2.3).
+        let power = battery ? DeviceClusters.battery(endpoint: top) : nil
+        var topTypes = [DeviceTypes.bridgedNode] + (battery ? [DeviceTypes.powerSource] : [])
+        var topClusters: [any ClusterHandler] = [basicInformation] + (power.map { [$0] } ?? [])
+        if parts.count == 1 {
+            topTypes = parts[0].kind.deviceTypes + topTypes
+            topClusters = partClusters[0] + topClusters
         }
-        let device = BridgedDevice(info: info, kind: kind, endpoint: number, clusters: clusters, basicInformation: basicInformation,
-                                   dataModel: node.dataModel)
-        try await node.add(Endpoint(number: number, deviceTypes: deviceTypes, clusters: clusters + [basicInformation],
-                                    parent: Self.aggregatorEndpoint))
+        try await node.add(Endpoint(number: top, deviceTypes: topTypes, clusters: topClusters, parent: aggregatorEndpoint))
+        if parts.count > 1 {
+            for (index, part) in parts.enumerated() {
+                try await node.add(Endpoint(number: partEndpoints[index], deviceTypes: part.kind.deviceTypes,
+                                            clusters: partClusters[index], parent: top, tags: part.tags))
+            }
+        }
+        let device = BridgedDevice(info: info, endpoint: top, partEndpoints: partEndpoints, parts: partClusters,
+                                   basicInformation: basicInformation, power: power)
         devices[info.id] = device
         return device
     }
 
-    /// Removes a device; its endpoint number is not given to another device.
+    /// Removes a device; its endpoint numbers are not given to another device.
     public func remove(_ id: String) async throws {
         guard let device = devices.removeValue(forKey: id) else { throw BridgeError.unknownDevice(id) }
         try await node.remove(endpoint: device.endpoint)
     }
 
-    private func endpoint(for id: String) async throws -> EndpointNumber {
+    private func allocate(_ id: String, _ allocated: inout Bool) throws -> EndpointNumber {
         if let known = endpoints[id] { return known }
         guard nextEndpoint < EndpointNumber.max else { throw BridgeError.endpointsExhausted }
-        let number = nextEndpoint
-        nextEndpoint += 1
-        endpoints[id] = number
+        defer { nextEndpoint += 1 }
+        endpoints[id] = nextEndpoint
+        allocated = true
+        return nextEndpoint
+    }
+
+    private func saveEndpoints() async throws {
         try await node.storage.setValue(TLVEncoder.encode(.structure([
             .field(1, .unsigned(UInt64(nextEndpoint))),
             .field(2, .array(endpoints.sorted { $0.value < $1.value }.map { id, number in
                 TLVElement(.structure([.field(0, .utf8(id)), .field(1, .unsigned(UInt64(number)))]))
             })),
         ])), for: StorageKey.bridgeEndpoints)
-        return number
     }
 
     static func basicInformation(_ info: BridgedDeviceInfo) -> AttributeCluster {
         typealias A = BridgedDeviceBasicInformationCluster.Attribute
+        func label(_ text: String) -> TLVValue { .utf8(String(text.prefix(32))) }
         var attributes: [AttributeID: TLVValue] = [
-            A.nodeLabel: .utf8(String(info.name.prefix(32))), A.reachable: .bool(true), A.uniqueId: .utf8(String(info.id.prefix(32))),
-            A.configurationVersion: .unsigned(1),
+            A.nodeLabel: label(info.name), A.reachable: .bool(true), A.uniqueId: label(info.id), A.configurationVersion: .unsigned(1),
         ]
-        if let vendor = info.vendorName { attributes[A.vendorName] = .utf8(String(vendor.prefix(32))) }
-        if let product = info.productName { attributes[A.productName] = .utf8(String(product.prefix(32))) }
-        if let serial = info.serialNumber { attributes[A.serialNumber] = .utf8(String(serial.prefix(32))) }
+        if let vendor = info.vendorName { attributes[A.vendorName] = label(vendor) }
+        if let product = info.productName { attributes[A.productName] = label(product) }
+        if let serial = info.serialNumber { attributes[A.serialNumber] = label(serial) }
         return AttributeCluster(BridgedDeviceBasicInformationCluster.definition, attributes: attributes)
-    }
-
-    /// The clusters a device type requires (Device Library), wired to the handler.
-    static func clusters(for kind: BridgedDeviceKind, handler: @escaping DeviceCommandHandler) async -> [AttributeCluster] {
-        switch kind {
-        case .onOffLight:
-            return [await DeviceClusters.identify(handler), await DeviceClusters.groups(), await DeviceClusters.scenes(),
-                    await DeviceClusters.onOff(lighting: true, handler)]
-        case .dimmableLight, .colorTemperatureLight, .extendedColorLight:
-            let onOff = await DeviceClusters.onOff(lighting: true, handler)
-            var clusters = [await DeviceClusters.identify(handler), await DeviceClusters.groups(), await DeviceClusters.scenes(), onOff,
-                            await DeviceClusters.levelControl(onOff: onOff, handler)]
-            if case .colorTemperatureLight(let range) = kind {
-                clusters.append(await DeviceClusters.colorControl(hueSaturation: false, temperatureRange: range, handler))
-            }
-            if case .extendedColorLight(let range) = kind {
-                clusters.append(await DeviceClusters.colorControl(hueSaturation: true, temperatureRange: range, handler))
-            }
-            return clusters
-        case .onOffPlug:
-            return [await DeviceClusters.identify(handler), await DeviceClusters.groups(), await DeviceClusters.scenes(),
-                    await DeviceClusters.onOff(lighting: false, handler)]
-        case .dimmablePlug:
-            let onOff = await DeviceClusters.onOff(lighting: false, handler)
-            return [await DeviceClusters.identify(handler), await DeviceClusters.groups(), await DeviceClusters.scenes(), onOff,
-                    await DeviceClusters.levelControl(onOff: onOff, handler)]
-        case .contactSensor:
-            return [await DeviceClusters.identify(handler), DeviceClusters.booleanState()]
-        case .occupancySensor:
-            return [await DeviceClusters.identify(handler), DeviceClusters.occupancySensing()]
-        case .temperatureSensor:
-            return [await DeviceClusters.identify(handler),
-                    DeviceClusters.measurement(TemperatureMeasurementCluster.definition, value: .null, minimum: .signed(-5000), maximum: .signed(10000))]
-        case .humiditySensor:
-            return [await DeviceClusters.identify(handler),
-                    DeviceClusters.measurement(RelativeHumidityMeasurementCluster.definition, value: .null, minimum: .unsigned(0), maximum: .unsigned(10000))]
-        case .lightSensor:
-            return [await DeviceClusters.identify(handler),
-                    DeviceClusters.measurement(IlluminanceMeasurementCluster.definition, value: .null, minimum: .unsigned(1), maximum: .unsigned(0xFFFE))]
-        case .windowCovering:
-            return [await DeviceClusters.identify(handler), await DeviceClusters.windowCovering(handler)]
-        case .fan:
-            return [await DeviceClusters.identify(handler), await DeviceClusters.groups(), await DeviceClusters.fanControl(handler)]
-        }
     }
 }
