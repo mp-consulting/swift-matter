@@ -88,6 +88,8 @@ extension Groups {
         }
         var state = fabrics[fabric] ?? FabricGroups()
         state.keyMap.removeAll { $0.group == group }
+        // GroupKeyMap holds as many entries as a fabric has groups (Core §11.2.6.1).
+        guard state.keyMap.count < Self.maxGroupsPerFabric else { throw StatusError(.resourceExhausted) }
         state.keyMap.append((group, keySet))
         return state
     }

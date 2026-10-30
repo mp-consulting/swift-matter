@@ -233,11 +233,26 @@ struct BridgeTests {
         #expect(Set(events.compactMap { report -> EventID? in if case .data(let record) = report { record.event } else { nil } })
             == [ClosureControlCluster.Event.secureStateChanged, ClosureControlCluster.Event.movementCompleted])
 
+        // Closing while it opens reaches the gate, as opening a half-open gate does.
+        await gate.update(.closure(.fullyClosed, moving: false))
+        _ = try await fixture.base.commissioner.client.invoke(
+            path, fields: .structure([.field(0, .unsigned(ClosureControlCluster.TargetPositionEnum.moveToFullyOpen))]), timed: .seconds(5),
+            session: fixture.session)
+        _ = try await fixture.base.commissioner.client.invoke(
+            path, fields: .structure([.field(0, .unsigned(ClosureControlCluster.TargetPositionEnum.moveToFullyClosed))]), timed: .seconds(5),
+            session: fixture.session)
+        await gate.update(.closure(.partiallyOpened))
+        _ = try await fixture.base.commissioner.client.invoke(
+            path, fields: .structure([.field(0, .unsigned(ClosureControlCluster.TargetPositionEnum.moveToFullyOpen))]), timed: .seconds(5),
+            session: fixture.session)
+        #expect(await commands.values == [.setClosureOpen(true), .setClosureOpen(true), .setClosureOpen(false), .setClosureOpen(true)])
+        await gate.update(.closure(.fullyOpened))
+
         // Already open: nothing to do. Beyond the enum: a constraint error.
         _ = try await fixture.base.commissioner.client.invoke(
             path, fields: .structure([.field(0, .unsigned(ClosureControlCluster.TargetPositionEnum.moveToFullyOpen))]), timed: .seconds(5),
             session: fixture.session)
-        #expect(await commands.values == [.setClosureOpen(true)])
+        #expect(await commands.values.count == 4)
         let refused = try await fixture.base.commissioner.client.invoke(path, fields: .structure([.field(0, .unsigned(9))]), timed: .seconds(5),
                                                                         session: fixture.session)
         guard case .status(let status) = refused else { Issue.record("Expected a status"); return }

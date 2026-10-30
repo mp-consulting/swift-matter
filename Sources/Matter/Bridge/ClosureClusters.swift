@@ -50,8 +50,10 @@ extension DeviceClusters {
             // Every target other than fully closed opens it: this closure knows only open and closed.
             let open = requested != Target.moveToFullyClosed
             await cluster.set(A.overallTargetState, .structure([.field(ClosureControlCluster.OverallTargetStateStruct.position, .unsigned(requested))]))
+            // Already there, and not on its way elsewhere: nothing to do (§5.4.8.2.4).
             let current = await cluster.value(A.overallCurrentState)?[ClosureControlCluster.OverallCurrentStateStruct.position]?.uint
-            if let current, (current == ClosurePosition.fullyClosed.rawValue) == !open {
+            let arrived = open ? ClosurePosition.fullyOpened : .fullyClosed
+            if state != Main.moving, current == arrived.rawValue {
                 await cluster.set(A.mainState, .unsigned(Main.stopped))
                 return .success
             }
