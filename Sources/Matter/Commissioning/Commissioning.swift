@@ -62,7 +62,8 @@ public actor Commissioning {
 
     func setLayer(_ layer: MessageLayer) { self.layer = layer }
 
-    func onWindowChange(_ observer: @escaping @Sendable (Window, UInt16?) async -> Void) { windowObservers.append(observer) }
+    /// Calls `observer` when the commissioning window opens (its kind and discriminator) or closes.
+    public func onWindowChange(_ observer: @escaping @Sendable (Window, UInt16?) async -> Void) { windowObservers.append(observer) }
     /// Observers learn the removed fabric at once, with how long its sessions should be kept so a response can go out.
     func onFabricRemoved(_ observer: @escaping @Sendable (FabricIndex, Duration) async -> Void) { fabricRemovedObservers.append(observer) }
 
