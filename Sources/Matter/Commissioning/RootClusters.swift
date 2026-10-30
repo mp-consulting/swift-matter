@@ -49,8 +49,6 @@ enum RootClusters {
         ]
     }
 
-    static func string(_ value: String) -> TLVValue { .utf8(value) }
-
     // MARK: - Basic Information (Core §11.1)
 
     static func basicInformation(_ info: NodeInformation) async -> AttributeCluster {
@@ -175,7 +173,7 @@ enum RootClusters {
         await cluster.handle(C.csrRequest) { _, fields, context in
             let request = try TLVStruct(fields)
             let (elements, signature) = try await commissioning.csr(nonce: try request.bytes(0), forUpdate: request[1]?.bool ?? false,
-                                                                    challenge: context.session.attestationChallenge)
+                                                                    challenge: context.session.attestationChallenge, session: context.session)
             return .response(C.csrResponse, .structure([.field(0, .bytes(elements)), .field(1, .bytes(signature))]))
         }
         @Sendable func nocResponse(_ status: Commissioning.NOCStatus, _ index: FabricIndex? = nil) -> InvokeResult {
@@ -183,8 +181,8 @@ enum RootClusters {
             if let index { fields.append(.field(1, .unsigned(UInt64(index)))) }
             return .response(C.nocResponse, .structure(fields))
         }
-        await cluster.handle(C.addTrustedRootCertificate) { _, fields, _ in
-            try await commissioning.addTrustedRoot(try TLVStruct(fields).bytes(0))
+        await cluster.handle(C.addTrustedRootCertificate) { _, fields, context in
+            try await commissioning.addTrustedRoot(try TLVStruct(fields).bytes(0), session: context.session)
             return .success
         }
         await cluster.handle(C.addNoc) { _, fields, context in
@@ -197,7 +195,7 @@ enum RootClusters {
         await cluster.handle(C.updateNoc) { _, fields, context in
             guard let fabric = context.fabricIndex else { throw StatusError(.unsupportedAccess) }
             let request = try TLVStruct(fields)
-            let status = try await commissioning.updateNOC(noc: try request.bytes(0), icac: request[1]?.bytes, fabricIndex: fabric)
+            let status = try await commissioning.updateNOC(noc: try request.bytes(0), icac: request[1]?.bytes, session: context.session)
             return nocResponse(status, status == .ok ? fabric : nil)
         }
         await cluster.handle(C.updateFabricLabel) { _, fields, context in
@@ -210,18 +208,11 @@ enum RootClusters {
             try await fabrics.update(fabric)
             return nocResponse(.ok, index)
         }
-        await cluster.handle(C.removeFabric) { _, fields, context in
+        await cluster.handle(C.removeFabric) { _, fields, _ in
             let index = try TLVStruct(fields).uint(0, as: UInt8.self)
             guard await fabrics.fabric(index) != nil else { return nocResponse(.invalidFabricIndex) }
-            try await fabrics.remove(index)
-            await accessControl.removeFabric(index)
             // The fabric's sessions end once this response is out.
-            if let layer = context.exchange?.layer {
-                Task {
-                    try? await Task.sleep(for: .milliseconds(500))
-                    await layer.removeSessions { $0.fabricIndex == index }
-                }
-            }
+            try await commissioning.removeFabric(index, closingSessionsAfter: .milliseconds(500))
             return nocResponse(.ok, index)
         }
         return cluster
@@ -241,6 +232,7 @@ enum RootClusters {
         }
         await cluster.onWrite { cluster, attribute, value, context in
             guard attribute == A.acl, let fabric = context.fabricIndex else { throw StatusError(.unsupportedAccess) }
+            // The accessing fabric's entries, stamped by the merge whatever FabricIndex the writer gave (or left out).
             let written = FabricScopedList.entries(value, fabric: fabric)
             guard written.count <= entriesLimit else { throw StatusError(.resourceExhausted) }
             let parsed = try written.map { try AccessControlEntry(tlv: $0.value) }
@@ -348,10 +340,11 @@ enum RootClusters {
             guard (180...900).contains(timeout), discriminator <= 0x0FFF, PBKDF2.iterationRange.contains(Int(iterations)),
                   (16...32).contains(salt.count), let verifier = try? SPAKE2Plus.Verifier(serialized: verifierBytes)
             else { throw StatusError(.failure, clusterStatus: 3) } // PAKEParameterError
-            let vendor = await context.fabricIndex.asyncMap { await commissioning.fabrics.fabric($0)?.vendorID }
+            var vendor: UInt16?
+            if let index = context.fabricIndex { vendor = await commissioning.fabrics.fabric(index)?.vendorID }
             await commissioning.open(.enhanced, verifier: PASEVerifier(verifier: verifier, salt: salt, iterations: Int(iterations)),
                                      discriminator: discriminator, timeout: .seconds(Int(timeout)), adminFabric: context.fabricIndex,
-                                     adminVendor: vendor ?? nil)
+                                     adminVendor: vendor)
             return .success
         }
         await cluster.handle(C.revokeCommissioning) { _, _, _ in
@@ -361,12 +354,5 @@ enum RootClusters {
             return .success
         }
         return cluster
-    }
-}
-
-extension Optional {
-    func asyncMap<T>(_ transform: (Wrapped) async throws -> T) async rethrows -> T? {
-        guard let value = self else { return nil }
-        return try await transform(value)
     }
 }

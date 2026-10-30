@@ -16,7 +16,6 @@ public actor Commissioning {
     struct WindowState {
         var kind: Window
         var verifier: PASEVerifier
-        var discriminator: UInt16
         var adminFabric: FabricIndex?
         var adminVendor: UInt16?
         var expiry: Task<Void, Never>?
@@ -24,7 +23,6 @@ public actor Commissioning {
 
     /// What is pending while the fail-safe is armed.
     struct FailSafe {
-        var deadline: ContinuousClock.Instant
         var cumulativeDeadline: ContinuousClock.Instant
         /// The session that armed it, and its fabric (nil over PASE before AddNOC).
         var sessionID: UInt16
@@ -51,8 +49,8 @@ public actor Commissioning {
     public private(set) var breadcrumb: UInt64 = 0
     /// Told when the window opens or closes, so advertising follows.
     private var windowObservers: [@Sendable (Window, UInt16?) async -> Void] = []
-    /// Told when the fail-safe rolls back a fabric, so its sessions close.
-    private var rollbackObservers: [@Sendable (FabricIndex) async -> Void] = []
+    /// Told when a fabric is removed (by RemoveFabric or a fail-safe rollback), so its sessions close.
+    private var fabricRemovedObservers: [@Sendable (FabricIndex) async -> Void] = []
     weak var layer: MessageLayer?
 
     init(fabrics: FabricTable, accessControl: AccessControlEntries, attestation: DeviceAttestation, logger: Logger) {
@@ -65,7 +63,18 @@ public actor Commissioning {
     func setLayer(_ layer: MessageLayer) { self.layer = layer }
 
     func onWindowChange(_ observer: @escaping @Sendable (Window, UInt16?) async -> Void) { windowObservers.append(observer) }
-    func onRollback(_ observer: @escaping @Sendable (FabricIndex) async -> Void) { rollbackObservers.append(observer) }
+    func onFabricRemoved(_ observer: @escaping @Sendable (FabricIndex) async -> Void) { fabricRemovedObservers.append(observer) }
+
+    /// Removes a fabric with its ACL entries; its sessions close after `delay` (so a response can go out first).
+    func removeFabric(_ index: FabricIndex, closingSessionsAfter delay: Duration = .zero) async throws {
+        try await fabrics.remove(index)
+        await accessControl.removeFabric(index)
+        let observers = fabricRemovedObservers
+        Task {
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            for observer in observers { await observer(index) }
+        }
+    }
 
     // MARK: - Window
 
@@ -78,7 +87,7 @@ public actor Commissioning {
               adminVendor: UInt16? = nil) async {
         window?.expiry?.cancel()
         paseFailures = 0
-        var state = WindowState(kind: kind, verifier: verifier, discriminator: discriminator, adminFabric: adminFabric, adminVendor: adminVendor)
+        var state = WindowState(kind: kind, verifier: verifier, adminFabric: adminFabric, adminVendor: adminVendor)
         if let timeout {
             state.expiry = Task { [weak self] in
                 guard (try? await Task.sleep(for: timeout)) != nil else { return }
@@ -119,14 +128,12 @@ public actor Commissioning {
 
     /// ArmFailSafe (Core §11.10.7.2); nil means success, otherwise the CommissioningErrorEnum value.
     func arm(expiry seconds: UInt16, breadcrumb: UInt64, session: SessionInfo) async -> UInt8? {
-        if let failSafe {
+        if failSafe != nil {
             // Only the session (or fabric) that armed it may extend or disarm it.
-            let sameFabric = failSafe.fabricIndex != nil && failSafe.fabricIndex == session.fabricIndex
-            guard failSafe.sessionID == session.localSessionID || sameFabric else { return 4 } // BusyWithOtherAdmin
-        } else {
+            guard owns(session) else { return 4 } // BusyWithOtherAdmin
+        } else if window?.kind == .enhanced, session.kind == .case {
             // Over CASE while an enhanced window waits for another commissioner, the node is busy (§11.10.7.2.1).
-            if window?.kind == .enhanced, session.kind == .case { return 4 }
-            if seconds == 0 { self.breadcrumb = breadcrumb; return nil }
+            return 4
         }
         if seconds == 0 {
             await expire()
@@ -134,11 +141,10 @@ public actor Commissioning {
             return nil
         }
         let now = ContinuousClock.now
-        var state = failSafe ?? FailSafe(deadline: now, cumulativeDeadline: now + .seconds(Int(Self.maxCumulativeFailSafe)),
+        var state = failSafe ?? FailSafe(cumulativeDeadline: now + .seconds(Int(Self.maxCumulativeFailSafe)),
                                          sessionID: session.localSessionID, fabricIndex: session.fabricIndex)
-        state.deadline = min(now + .seconds(Int(seconds)), state.cumulativeDeadline)
+        let deadline = min(now + .seconds(Int(seconds)), state.cumulativeDeadline)
         state.expiry?.cancel()
-        let deadline = state.deadline
         state.expiry = Task { [weak self] in
             guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
             await self?.expire()
@@ -146,6 +152,19 @@ public actor Commissioning {
         failSafe = state
         self.breadcrumb = breadcrumb
         return nil
+    }
+
+    /// Whether the session armed the fail-safe, or belongs to the fabric that did.
+    private func owns(_ session: SessionInfo) -> Bool {
+        guard let failSafe else { return false }
+        return failSafe.sessionID == session.localSessionID
+            || (failSafe.fabricIndex != nil && failSafe.fabricIndex == session.fabricIndex)
+    }
+
+    /// The fail-safe the credential commands run under: armed, and by the caller (Core §11.18.6).
+    private func requireFailSafe(_ session: SessionInfo) throws -> FailSafe {
+        guard let failSafe, owns(session) else { throw StatusError(.failsafeRequired) }
+        return failSafe
     }
 
     /// Rolls back everything added under the fail-safe (Core §11.10.7.2.2).
@@ -156,9 +175,7 @@ public actor Commissioning {
         breadcrumb = 0
         if let added = state.addedFabric {
             logger.info("Fail-safe expired: removing fabric \(added)")
-            try? await fabrics.remove(added)
-            await accessControl.removeFabric(added)
-            for observer in rollbackObservers { await observer(added) }
+            try? await removeFabric(added)
         }
         if let updated = state.updatedFabric { try? await fabrics.update(updated) }
         if window == nil { await layer?.removeSessions { $0.kind == .pase } }
@@ -180,8 +197,8 @@ public actor Commissioning {
     // MARK: - Operational credentials
 
     /// CSRRequest (Core §11.18.6.5): a new operational key, pending until AddNOC or UpdateNOC.
-    func csr(nonce: [UInt8], forUpdate: Bool, challenge: [UInt8]) throws -> (elements: [UInt8], signature: [UInt8]) {
-        guard failSafe != nil else { throw StatusError(.failsafeRequired) }
+    func csr(nonce: [UInt8], forUpdate: Bool, challenge: [UInt8], session: SessionInfo) throws -> (elements: [UInt8], signature: [UInt8]) {
+        _ = try requireFailSafe(session)
         guard nonce.count == 32 else { throw StatusError(.invalidCommand) }
         let key = P256.Signing.PrivateKey()
         failSafe?.pendingKey = key
@@ -191,8 +208,8 @@ public actor Commissioning {
     }
 
     /// AddTrustedRootCertificate (Core §11.18.6.13).
-    func addTrustedRoot(_ bytes: [UInt8]) throws {
-        guard failSafe != nil else { throw StatusError(.failsafeRequired) }
+    func addTrustedRoot(_ bytes: [UInt8], session: SessionInfo) throws {
+        _ = try requireFailSafe(session)
         guard failSafe?.pendingRoot == nil, failSafe?.addedFabric == nil else { throw StatusError(.constraintError) }
         guard let root = try? MatterCertificate(tlv: bytes), root.rcacID != nil, root.basicConstraints?.isCA == true,
               root.isSigned(by: root)
@@ -209,15 +226,13 @@ public actor Commissioning {
     /// AddNOC (Core §11.18.6.8): the new fabric, with an Administer entry for the commissioner's subject.
     func addNOC(noc nocBytes: [UInt8], icac icacBytes: [UInt8]?, ipk: [UInt8], adminSubject: UInt64, adminVendor: UInt16,
                 session: SessionInfo) async throws -> (NOCStatus, FabricIndex?) {
-        guard let state = failSafe else { throw StatusError(.failsafeRequired) }
+        let state = try requireFailSafe(session)
         guard state.addedFabric == nil, state.updatedFabric == nil else { throw StatusError(.constraintError) }
         guard let key = state.pendingKey, !state.keyForUpdate, let root = state.pendingRoot else { return (.missingCSR, nil) }
         guard ipk.count == 16 else { throw StatusError(.invalidCommand) }
         guard let noc = try? MatterCertificate(tlv: nocBytes) else { return (.invalidNOC, nil) }
-        let icac = try icacBytes.map { bytes -> MatterCertificate in
-            guard let certificate = try? MatterCertificate(tlv: bytes) else { throw NOCError.invalid }
-            return certificate
-        }
+        let icac = icacBytes.flatMap { try? MatterCertificate(tlv: $0) }
+        if icacBytes != nil, icac == nil { return (.invalidNOC, nil) }
         guard noc.publicKey == Array(key.publicKey.x963Representation) else { return (.invalidPublicKey, nil) }
         do { try CertificateChain.validate(noc: noc, icac: icac, rcac: root) } catch { return (.invalidNOC, nil) }
         // The admin subject is a node id or a CAT, never a group or a PAKE id (Core §11.18.6.8).
@@ -242,12 +257,16 @@ public actor Commissioning {
     }
 
     /// UpdateNOC (Core §11.18.6.9): a new NOC for the accessing fabric, with the key from the last CSRRequest.
-    func updateNOC(noc nocBytes: [UInt8], icac icacBytes: [UInt8]?, fabricIndex: FabricIndex) async throws -> NOCStatus {
-        guard let state = failSafe else { throw StatusError(.failsafeRequired) }
+    func updateNOC(noc nocBytes: [UInt8], icac icacBytes: [UInt8]?, session: SessionInfo) async throws -> NOCStatus {
+        let state = try requireFailSafe(session)
+        // One NOC change per fail-safe, so a rollback restores the original (Core §11.18.6.9).
+        guard state.addedFabric == nil, state.updatedFabric == nil else { throw StatusError(.constraintError) }
+        guard let fabricIndex = session.fabricIndex else { throw StatusError(.unsupportedAccess) }
         guard let key = state.pendingKey, state.keyForUpdate else { return .missingCSR }
         guard let fabric = await fabrics.fabric(fabricIndex) else { return .invalidFabricIndex }
         guard let noc = try? MatterCertificate(tlv: nocBytes) else { return .invalidNOC }
         let icac = icacBytes.flatMap { try? MatterCertificate(tlv: $0) }
+        if icacBytes != nil, icac == nil { return .invalidNOC }
         guard noc.publicKey == Array(key.publicKey.x963Representation) else { return .invalidPublicKey }
         do { try CertificateChain.validate(noc: noc, icac: icac, rcac: fabric.rootCertificate) } catch { return .invalidNOC }
         guard noc.fabricID == fabric.fabricID else { return .invalidNOC }
@@ -259,49 +278,5 @@ public actor Commissioning {
         failSafe?.updatedFabric = fabric
         failSafe?.pendingKey = nil
         return .ok
-    }
-
-    enum NOCError: Error { case invalid }
-}
-
-/// The ACL entries of every fabric, persisted; the AccessControl cluster reads and writes them per fabric.
-public actor AccessControlEntries: AccessController {
-    private var entries: [AccessControlEntry] = []
-    private let storage: any MatterStorage
-    private var observers: [@Sendable () -> Void] = []
-
-    public init(storage: any MatterStorage) async {
-        self.storage = storage
-        if let data = await storage.value(for: "acl"), let list = try? TLVDecoder.decode(data).value.elements {
-            entries = list.compactMap { try? AccessControlEntry(tlv: $0.value) }
-        }
-    }
-
-    public var all: [AccessControlEntry] { entries }
-
-    func onChange(_ observer: @escaping @Sendable () -> Void) { observers.append(observer) }
-
-    public func entries(fabric: FabricIndex) -> [AccessControlEntry] { entries.filter { $0.fabricIndex == fabric } }
-
-    public func replace(fabric: FabricIndex, with newEntries: [AccessControlEntry]) async {
-        entries = entries.filter { $0.fabricIndex != fabric } + newEntries.map { entry in
-            var stamped = entry
-            stamped.fabricIndex = fabric
-            return stamped
-        }
-        await save()
-    }
-
-    public func removeFabric(_ fabric: FabricIndex) async { await replace(fabric: fabric, with: []) }
-
-    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Privilege? {
-        // A PASE session commissions the node: it holds Administer implicitly (Core §6.6.2.9).
-        if session.kind == .pase { return .administer }
-        return entries.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }.map(\.privilege).max()
-    }
-
-    private func save() async {
-        try? await storage.setValue(TLVEncoder.encode(.array(entries.map { TLVElement($0.tlv) })), for: "acl")
-        for observer in observers { observer() }
     }
 }

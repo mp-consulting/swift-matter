@@ -55,7 +55,7 @@ struct MatterRecords: Sendable {
         if !operational.isEmpty { services.append(Self.operationalService) }
         for advertisement in operational {
             let service = Self.operationalService
-            let fabric = advertisement.compressedFabricID.map { zeroPadded($0, width: 2, radix: 16) }.joined()
+            let fabric = hexString(advertisement.compressedFabricID)
             let instance = DNSName(["\(fabric)-\(zeroPadded(advertisement.nodeID, width: 16, radix: 16))"] + service.labels)
             records.append(DNSRecord(name: service, data: .ptr(instance), ttl: Self.ttl))
             records.append(DNSRecord(name: Self.subtype("_I\(fabric)", of: service), data: .ptr(instance), ttl: Self.ttl))
@@ -70,18 +70,22 @@ struct MatterRecords: Sendable {
 
     /// The answers to a query's questions, and the additional records that save the querier a round trip.
     func answer(_ questions: [DNSQuestion]) -> (answers: [DNSRecord], additionals: [DNSRecord]) {
-        let records = all
+        Self.answer(questions, index: Dictionary(grouping: all, by: \.name), host: host)
+    }
+
+    /// Answers from records indexed by name (the advertiser keeps the index between queries).
+    static func answer(_ questions: [DNSQuestion], index: [DNSName: [DNSRecord]], host: DNSName) -> (answers: [DNSRecord], additionals: [DNSRecord]) {
         var answers: [DNSRecord] = []
         for question in questions {
-            answers += records.filter { $0.name == question.name && (question.type == DNSType.any || question.type == $0.type) }
+            answers += (index[question.name] ?? []).filter { question.type == DNSType.any || question.type == $0.type }
         }
         var additionals: [DNSRecord] = []
         for answer in answers {
-            if case .ptr(let instance) = answer.data { additionals += records.filter { $0.name == instance } }
-            if case .srv = answer.data { additionals += records.filter { $0.name == host } }
+            if case .ptr(let instance) = answer.data { additionals += index[instance] ?? [] }
+            if case .srv = answer.data { additionals += index[host] ?? [] }
         }
         if additionals.contains(where: { if case .srv = $0.data { true } else { false } }) {
-            additionals += records.filter { $0.name == host }
+            additionals += index[host] ?? []
         }
         var seen = Set<DNSRecord>(answers)
         return (Array(answers.uniqued()), additionals.filter { seen.insert($0).inserted })
@@ -102,6 +106,8 @@ public actor MDNSAdvertiser: NodeAdvertiser {
     private let group: EventLoopGroup
     private let logger: Logger
     private var records: MatterRecords
+    /// The records by name, rebuilt when they change rather than for every query.
+    private var index: [DNSName: [DNSRecord]] = [:]
     private var channels: [Channel] = []
     private var started = false
 
@@ -110,11 +116,11 @@ public actor MDNSAdvertiser: NodeAdvertiser {
                 logger: Logger = Logger(label: "matter.mdns")) {
         self.group = group
         self.logger = logger
-        let host = hostName ?? MatterCrypto.random(6).map { zeroPadded($0, width: 2, radix: 16) }.joined()
+        let host = hostName ?? hexString(MatterCrypto.random(6))
         records = MatterRecords(host: DNSName([host, "local"]), addresses: [], commissionableInstance: Self.randomInstance())
     }
 
-    static func randomInstance() -> String { MatterCrypto.random(8).map { zeroPadded($0, width: 2, radix: 16) }.joined() }
+    static func randomInstance() -> String { hexString(MatterCrypto.random(8)) }
 
     public func advertiseCommissionable(_ advertisement: CommissionableAdvertisement?) async {
         await update {
@@ -140,7 +146,9 @@ public actor MDNSAdvertiser: NodeAdvertiser {
         change(&records)
         if !started { await start() }
         let after = records.all
-        let removed = before.filter { old in !after.contains { $0.sameData(as: old) } }
+        index = Dictionary(grouping: after, by: \.name)
+        let current = Set(after.map { RecordKey(name: $0.name, data: $0.data) })
+        let removed = before.filter { !current.contains(RecordKey(name: $0.name, data: $0.data)) }
         if !removed.isEmpty { await send(DNSMessage(isResponse: true, answers: goodbye(removed))) }
         guard !after.isEmpty else { return }
         let announcement = DNSMessage(isResponse: true, answers: after)
@@ -223,7 +231,7 @@ public actor MDNSAdvertiser: NodeAdvertiser {
 
     private func receive(_ bytes: [UInt8], from sender: SocketAddress, on channel: Channel) async {
         guard let query = try? DNSMessage(bytes: bytes), !query.isResponse, !query.questions.isEmpty else { return }
-        let (answers, additionals) = records.answer(query.questions)
+        let (answers, additionals) = MatterRecords.answer(query.questions, index: index, host: records.host)
         guard !answers.isEmpty else { return }
         // A legacy querier (not from port 5353) gets a unicast reply that echoes its id and questions (RFC 6762 §6.7).
         let legacy = sender.port != Self.port
@@ -237,6 +245,11 @@ public actor MDNSAdvertiser: NodeAdvertiser {
         let destination = unicast ? sender : (try? SocketAddress(ipAddress: channel.localAddress?.protocol == .inet6 ? "ff02::fb" : "224.0.0.251",
                                                                   port: Self.port)) ?? sender
         try? await channel.writeAndFlush(AddressedEnvelope(remoteAddress: destination, data: channel.allocator.buffer(bytes: response.encode())))
+    }
+
+    private struct RecordKey: Hashable {
+        var name: DNSName
+        var data: DNSRecord.Data
     }
 
     private final class Inbound: ChannelInboundHandler, Sendable {

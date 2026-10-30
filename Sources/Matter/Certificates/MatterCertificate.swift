@@ -255,9 +255,7 @@ public struct MatterCertificate: Hashable, Sendable {
     public var x509: [UInt8] {
         get throws {
             let signature = try P256.Signing.ECDSASignature(rawRepresentation: signature)
-            return DER.sequence([
-                tbsCertificate, .sequence([.objectIdentifier(OID.ecdsaWithSHA256)]), .bitString(Array(signature.derRepresentation)),
-            ]).encoded
+            return DER.signed(tbsCertificate, signature: Array(signature.derRepresentation))
         }
     }
 

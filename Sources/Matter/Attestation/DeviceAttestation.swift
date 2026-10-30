@@ -163,8 +163,7 @@ enum X509 {
                 extensionDER(OID.authorityKeyIdentifier, critical: false, .sequence([.contextPrimitive(0, authorityKeyID)])),
             ])]),
         ])
-        let signature = try issuerKey.signature(for: tbs.encoded)
-        return DER.sequence([tbs, .sequence([.objectIdentifier(OID.ecdsaWithSHA256)]), .bitString(Array(signature.derRepresentation))]).encoded
+        return DER.signed(tbs, signature: Array(try issuerKey.signature(for: tbs.encoded).derRepresentation))
     }
 
     /// The parts of a certificate attestation checks need.
@@ -213,8 +212,7 @@ enum CertificationRequest {
             MatterCertificate.subjectPublicKeyInfo(Array(key.publicKey.x963Representation)),
             .contextConstructed(0, []),
         ])
-        let signature = try key.signature(for: info.encoded)
-        return DER.sequence([info, .sequence([.objectIdentifier(OID.ecdsaWithSHA256)]), .bitString(Array(signature.derRepresentation))]).encoded
+        return DER.signed(info, signature: Array(try key.signature(for: info.encoded).derRepresentation))
     }
 
     /// The requested public key, after checking the request's signature.

@@ -47,6 +47,36 @@ public enum CASE {
         return TLVEncoder.encode(.structure(fields))
     }
 
+    /// The encrypted part of Sigma2 and Sigma3: certificates, the signature, and Sigma2's resumption id.
+    static func tbeData(_ identity: Identity, signature: [UInt8], resumptionID: [UInt8]? = nil) -> [UInt8] {
+        var fields: [TLVElement] = [.field(1, .bytes(identity.noc.tlvEncoded))]
+        if let icac = identity.icac { fields.append(.field(2, .bytes(icac.tlvEncoded))) }
+        fields.append(.field(3, .bytes(signature)))
+        if let resumptionID { fields.append(.field(4, .bytes(resumptionID))) }
+        return TLVEncoder.encode(.structure(fields))
+    }
+
+    /// S2K = KDF(shared secret, IPK || responder random || responder key || Hash(Msg1), "Sigma2") (Core §4.14.2.6).
+    static func sigma2Key(_ shared: [UInt8], ipk: [UInt8], responderRandom: [UInt8], responderKey: [UInt8], msg1: [UInt8]) -> [UInt8] {
+        MatterCrypto.kdf(key: shared, salt: ipk + responderRandom + responderKey + MatterCrypto.hash(msg1), info: Array("Sigma2".utf8), length: 16)
+    }
+
+    /// S3K = KDF(shared secret, IPK || Hash(Msg1 || Msg2), "Sigma3").
+    static func sigma3Key(_ shared: [UInt8], ipk: [UInt8], msg1: [UInt8], msg2: [UInt8]) -> [UInt8] {
+        MatterCrypto.kdf(key: shared, salt: ipk + MatterCrypto.hash(msg1 + msg2), info: Array("Sigma3".utf8), length: 16)
+    }
+
+    /// Derives the session keys from the transcript and installs the session in this node's direction.
+    static func installSession(_ shared: [UInt8], ipk: [UInt8], transcript: [UInt8], isInitiator: Bool, info: SessionInfo,
+                               peerParameters: SessionParameters, layer: MessageLayer) async throws -> SessionInfo {
+        let keys = SessionKeys(secret: shared, salt: ipk + MatterCrypto.hash(transcript), info: PASE.sessionKeysInfo)
+        var info = info
+        info.attestationChallenge = keys.attestationChallenge
+        return try await layer.addSecureSession(
+            info: info, encryptKey: isInitiator ? keys.initiatorToResponder : keys.responderToInitiator,
+            decryptKey: isInitiator ? keys.responderToInitiator : keys.initiatorToResponder, peerParameters: peerParameters)
+    }
+
     /// Checks the peer's certificates and its signature over the TBS data; returns the peer's NOC.
     static func verifyPeer(_ tbe: TLVStruct, rcac: MatterCertificate, expectedFabricID: UInt64, ownKey: [UInt8], peerKey: [UInt8]) throws -> MatterCertificate {
         guard let noc = try? MatterCertificate(tlv: try tbe.bytes(1)) else { throw CASEError.invalidCertificate }
@@ -112,12 +142,9 @@ public enum CASE {
 
         let tbs2 = tbsData(noc: identity.noc, icac: identity.icac, ownKey: ephemeralKey, peerKey: initiatorKey)
         let signature = Array(try identity.operationalKey.signature(for: tbs2).rawRepresentation)
-        var tbe2: [TLVElement] = [.field(1, .bytes(identity.noc.tlvEncoded))]
-        if let icac = identity.icac { tbe2.append(.field(2, .bytes(icac.tlvEncoded))) }
-        tbe2 += [.field(3, .bytes(signature)), .field(4, .bytes(MatterCrypto.random(16)))]
-        let s2k = MatterCrypto.kdf(key: shared, salt: identity.ipk + responderRandom + ephemeralKey + MatterCrypto.hash(msg1),
-                                   info: Array("Sigma2".utf8), length: 16)
-        let encrypted2 = try AESCCM(key: s2k).seal(TLVEncoder.encode(.structure(tbe2)), nonce: sigma2Nonce)
+        let tbe2 = tbeData(identity, signature: signature, resumptionID: MatterCrypto.random(16))
+        let s2k = sigma2Key(shared, ipk: identity.ipk, responderRandom: responderRandom, responderKey: ephemeralKey, msg1: msg1)
+        let encrypted2 = try AESCCM(key: s2k).seal(tbe2, nonce: sigma2Nonce)
         let msg2 = TLVEncoder.encode(.structure([
             .field(1, .bytes(responderRandom)), .field(2, .unsigned(UInt64(localSessionID))), .field(3, .bytes(ephemeralKey)),
             .field(4, .bytes(encrypted2)), .field(5, layer.parameters.tlv),
@@ -128,18 +155,17 @@ public enum CASE {
         try PASE.expect(sigma3, .sigma3)
         let msg3 = sigma3.payload
         let encrypted3 = try TLVStruct(decoding: msg3).bytes(1)
-        let s3k = MatterCrypto.kdf(key: shared, salt: identity.ipk + MatterCrypto.hash(msg1 + msg2), info: Array("Sigma3".utf8), length: 16)
+        let s3k = sigma3Key(shared, ipk: identity.ipk, msg1: msg1, msg2: msg2)
         guard let tbe3 = try? TLVStruct(decoding: try AESCCM(key: s3k).open(encrypted3, nonce: sigma3Nonce)) else {
             throw CASEError.invalidMessage
         }
         let peer = try verifyPeer(tbe3, rcac: identity.rcac, expectedFabricID: fabric.fabricID, ownKey: ephemeralKey, peerKey: initiatorKey)
 
-        let keys = SessionKeys(secret: shared, salt: identity.ipk + MatterCrypto.hash(msg1 + msg2 + msg3), info: PASE.sessionKeysInfo)
         let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: initiatorSessionID, fabricIndex: fabric.index,
                                peerNodeID: peer.nodeID ?? 0, localNodeID: fabric.nodeID, caseAuthenticatedTags: peer.caseAuthenticatedTags,
-                               attestationChallenge: keys.attestationChallenge, peerAddress: exchange.initialSession.peerAddress)
-        try await layer.addSecureSession(info: info, encryptKey: keys.responderToInitiator, decryptKey: keys.initiatorToResponder,
-                                         peerParameters: SessionParameters(tlv: fields[5]))
+                               peerAddress: exchange.initialSession.peerAddress)
+        _ = try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: false, info: info,
+                                     peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
         try await exchange.sendStatus(.sessionEstablished)
     }
 
@@ -186,8 +212,7 @@ public enum CASE {
         let responderKey = try fields.bytes(3)
         guard peerSessionID != 0 else { throw CASEError.invalidMessage }
         let shared = try sharedSecret(ephemeral, peer: responderKey)
-        let s2k = MatterCrypto.kdf(key: shared, salt: identity.ipk + responderRandom + responderKey + MatterCrypto.hash(msg1),
-                                   info: Array("Sigma2".utf8), length: 16)
+        let s2k = sigma2Key(shared, ipk: identity.ipk, responderRandom: responderRandom, responderKey: responderKey, msg1: msg1)
         guard let tbe2 = try? TLVStruct(decoding: try AESCCM(key: s2k).open(try fields.bytes(4), nonce: sigma2Nonce)) else {
             throw CASEError.invalidMessage
         }
@@ -195,13 +220,9 @@ public enum CASE {
         guard peerNOC.nodeID == peerNodeID else { throw CASEError.invalidCertificate }
 
         let tbs3 = tbsData(noc: identity.noc, icac: identity.icac, ownKey: ephemeralKey, peerKey: responderKey)
-        var tbe3: [TLVElement] = [.field(1, .bytes(identity.noc.tlvEncoded))]
-        if let icac = identity.icac { tbe3.append(.field(2, .bytes(icac.tlvEncoded))) }
-        tbe3.append(.field(3, .bytes(Array(try identity.operationalKey.signature(for: tbs3).rawRepresentation))))
-        let s3k = MatterCrypto.kdf(key: shared, salt: identity.ipk + MatterCrypto.hash(msg1 + msg2), info: Array("Sigma3".utf8), length: 16)
-        let msg3 = TLVEncoder.encode(.structure([
-            .field(1, .bytes(try AESCCM(key: s3k).seal(TLVEncoder.encode(.structure(tbe3)), nonce: sigma3Nonce))),
-        ]))
+        let tbe3 = tbeData(identity, signature: Array(try identity.operationalKey.signature(for: tbs3).rawRepresentation))
+        let s3k = sigma3Key(shared, ipk: identity.ipk, msg1: msg1, msg2: msg2)
+        let msg3 = TLVEncoder.encode(.structure([.field(1, .bytes(try AESCCM(key: s3k).seal(tbe3, nonce: sigma3Nonce)))]))
         try await exchange.send(.sigma3, msg3)
 
         let finished = try await exchange.receive()
@@ -211,13 +232,11 @@ public enum CASE {
         let status = try StatusReport(decoding: finished.payload)
         guard status == .sessionEstablished else { throw CASEError.rejected(status) }
 
-        let keys = SessionKeys(secret: shared, salt: identity.ipk + MatterCrypto.hash(msg1 + msg2 + msg3), info: PASE.sessionKeysInfo)
         let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: identity.fabricIndex,
                                peerNodeID: peerNodeID, localNodeID: identity.noc.nodeID ?? 0,
-                               caseAuthenticatedTags: peerNOC.caseAuthenticatedTags, attestationChallenge: keys.attestationChallenge,
-                               peerAddress: peer)
-        return try await layer.addSecureSession(info: info, encryptKey: keys.initiatorToResponder, decryptKey: keys.responderToInitiator,
-                                                peerParameters: SessionParameters(tlv: fields[5]))
+                               caseAuthenticatedTags: peerNOC.caseAuthenticatedTags, peerAddress: peer)
+        return try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: true, info: info,
+                                        peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
     }
 }
 

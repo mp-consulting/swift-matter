@@ -51,3 +51,13 @@ public actor FileStorage: MatterStorage {
         _ = try FileManager.default.replaceItemAt(file, withItemAt: temporary)
     }
 }
+
+/// The keys the node and the bridge keep in storage.
+public enum StorageKey {
+    public static let fabrics = "fabrics"
+    public static let accessControl = "acl"
+    public static let setup = "setup"
+    public static let attestation = "attestation"
+    public static let uniqueID = "unique-id"
+    public static let bridgeEndpoints = "bridge-endpoints"
+}

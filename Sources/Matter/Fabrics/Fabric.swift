@@ -19,9 +19,10 @@ public struct Fabric: Sendable {
     public var fabricID: UInt64 { operationalCertificate.fabricID ?? 0 }
     public var nodeID: NodeID { operationalCertificate.nodeID ?? 0 }
     public var rootPublicKey: [UInt8] { rootCertificate.publicKey }
-    public var compressedFabricID: [UInt8] { Fabric.compressedFabricID(rootPublicKey: rootPublicKey, fabricID: fabricID) }
+    /// Derived once: CASE matches every Sigma1 against each fabric's IPK.
+    public let compressedFabricID: [UInt8]
     /// The operational group key of IPK epoch key 0 (Core §4.14.2.6.1).
-    public var ipk: [UInt8] { Fabric.operationalGroupKey(epochKey: ipkEpochKey, compressedFabricID: compressedFabricID) }
+    public let ipk: [UInt8]
 
     var signingKey: P256.Signing.PrivateKey { get throws { try P256.Signing.PrivateKey(rawRepresentation: operationalKey) } }
 
@@ -63,15 +64,11 @@ public struct Fabric: Sendable {
 
     init(tlv value: TLVValue) throws {
         let fields = try TLVStruct(value)
-        index = try fields.uint(1, as: UInt8.self)
-        rootCertificate = try MatterCertificate(tlv: try fields.bytes(2))
-        intermediateCertificate = try fields[3]?.bytes.map { try MatterCertificate(tlv: $0) }
-        operationalCertificate = try MatterCertificate(tlv: try fields.bytes(4))
-        operationalKey = try fields.bytes(5)
-        ipkEpochKey = try fields.bytes(6)
-        vendorID = try fields.uint(7, as: UInt16.self)
-        label = try fields.string(8)
-        caseAdminSubject = try fields.uint(9)
+        self.init(index: try fields.uint(1, as: UInt8.self), rootCertificate: try MatterCertificate(tlv: try fields.bytes(2)),
+                  intermediateCertificate: try fields[3]?.bytes.map { try MatterCertificate(tlv: $0) },
+                  operationalCertificate: try MatterCertificate(tlv: try fields.bytes(4)), operationalKey: try fields.bytes(5),
+                  ipkEpochKey: try fields.bytes(6), vendorID: try fields.uint(7, as: UInt16.self), label: try fields.string(8),
+                  caseAdminSubject: try fields.uint(9))
     }
 
     init(index: FabricIndex, rootCertificate: MatterCertificate, intermediateCertificate: MatterCertificate?,
@@ -86,6 +83,8 @@ public struct Fabric: Sendable {
         self.vendorID = vendorID
         self.label = label
         self.caseAdminSubject = caseAdminSubject
+        compressedFabricID = Fabric.compressedFabricID(rootPublicKey: rootCertificate.publicKey, fabricID: operationalCertificate.fabricID ?? 0)
+        ipk = Fabric.operationalGroupKey(epochKey: ipkEpochKey, compressedFabricID: compressedFabricID)
     }
 }
 
@@ -127,7 +126,7 @@ public actor FabricTable {
 
     public init(storage: any MatterStorage) async {
         self.storage = storage
-        if let data = await storage.value(for: "fabrics"), let list = try? TLVDecoder.decode(data).value.elements {
+        if let data = await storage.value(for: StorageKey.fabrics), let list = try? TLVDecoder.decode(data).value.elements {
             for element in list {
                 if let fabric = try? Fabric(tlv: element.value) { fabrics[fabric.index] = fabric }
             }
@@ -173,8 +172,8 @@ public actor FabricTable {
     }
 
     private func save() async throws {
-        try await storage.setValue(TLVEncoder.encode(.array(all.map { TLVElement($0.tlv) })), for: "fabrics")
         let snapshot = all
+        try await storage.setValue(TLVEncoder.encode(.array(snapshot.map { TLVElement($0.tlv) })), for: StorageKey.fabrics)
         for observer in observers { await observer(snapshot) }
     }
 }

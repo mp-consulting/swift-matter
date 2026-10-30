@@ -98,6 +98,11 @@ public indirect enum DER: Equatable, Sendable {
         return out + contents
     }
 
+    /// A signed structure (certificate or certification request): the content, ecdsa-with-SHA256, the DER signature.
+    public static func signed(_ content: DER, signature: [UInt8]) -> [UInt8] {
+        DER.sequence([content, .sequence([.objectIdentifier(OID.ecdsaWithSHA256)]), .bitString(signature)]).encoded
+    }
+
     // MARK: - Reading
 
     /// Parses one element spanning all of `bytes`.

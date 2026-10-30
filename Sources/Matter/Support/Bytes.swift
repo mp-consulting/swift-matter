@@ -18,6 +18,11 @@ func hex(_ string: String) -> [UInt8] {
     return bytes
 }
 
+/// Bytes as uppercase hexadecimal digits.
+func hexString(_ bytes: some Sequence<UInt8>) -> String {
+    bytes.map { zeroPadded($0, width: 2, radix: 16) }.joined()
+}
+
 /// A non-negative integer in decimal or uppercase hexadecimal, left-padded with zeros to `width` characters.
 func zeroPadded(_ value: some BinaryInteger, width: Int, radix: Int = 10) -> String {
     let digits = String(value, radix: radix, uppercase: true)

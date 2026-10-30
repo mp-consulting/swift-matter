@@ -130,3 +130,46 @@ public protocol AccessController: Sendable {
     /// The highest privilege the session holds on the target, or nil for none.
     func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) async -> Privilege?
 }
+
+/// The ACL entries of every fabric, persisted; the AccessControl cluster reads and writes them per fabric.
+public actor AccessControlEntries: AccessController {
+    private var entries: [AccessControlEntry] = []
+    private let storage: any MatterStorage
+    private var observers: [@Sendable () -> Void] = []
+
+    public init(storage: any MatterStorage) async {
+        self.storage = storage
+        if let data = await storage.value(for: StorageKey.accessControl), let list = try? TLVDecoder.decode(data).value.elements {
+            entries = list.compactMap { try? AccessControlEntry(tlv: $0.value) }
+        }
+    }
+
+    public var all: [AccessControlEntry] { entries }
+
+    func onChange(_ observer: @escaping @Sendable () -> Void) { observers.append(observer) }
+
+    public func entries(fabric: FabricIndex) -> [AccessControlEntry] { entries.filter { $0.fabricIndex == fabric } }
+
+    public func replace(fabric: FabricIndex, with newEntries: [AccessControlEntry]) async {
+        if newEntries.isEmpty, !entries.contains(where: { $0.fabricIndex == fabric }) { return }
+        entries = entries.filter { $0.fabricIndex != fabric } + newEntries.map { entry in
+            var stamped = entry
+            stamped.fabricIndex = fabric
+            return stamped
+        }
+        await save()
+    }
+
+    public func removeFabric(_ fabric: FabricIndex) async { await replace(fabric: fabric, with: []) }
+
+    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Privilege? {
+        // A PASE session commissions the node: it holds Administer implicitly (Core §6.6.2.9).
+        if session.kind == .pase { return .administer }
+        return entries.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }.map(\.privilege).max()
+    }
+
+    private func save() async {
+        try? await storage.setValue(TLVEncoder.encode(.array(entries.map { TLVElement($0.tlv) })), for: StorageKey.accessControl)
+        for observer in observers { observer() }
+    }
+}

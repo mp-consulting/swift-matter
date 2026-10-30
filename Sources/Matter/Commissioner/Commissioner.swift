@@ -20,6 +20,7 @@ public actor Commissioner {
     let operationalKey = P256.Signing.PrivateKey()
     public private(set) var operationalCertificate: MatterCertificate
     let ipkEpochKey: [UInt8]
+    let ipk: [UInt8]
     let trustedPAAs: [[UInt8]]
     private var nextSerial: UInt8 = 2
 
@@ -42,13 +43,13 @@ public actor Commissioner {
         rootCertificate = root
         operationalCertificate = try Self.noc(publicKey: Array(operationalKey.publicKey.x963Representation), nodeID: nodeID, serial: 1,
                                               fabricID: fabricID, root: root, rootKey: rootKey)
+        ipk = Fabric.operationalGroupKey(epochKey: ipkEpochKey,
+                                         compressedFabricID: Fabric.compressedFabricID(rootPublicKey: rootPublic, fabricID: fabricID))
     }
 
     /// The commissioner's CASE identity on its fabric.
     public var identity: CASE.Identity {
-        let compressed = Fabric.compressedFabricID(rootPublicKey: rootCertificate.publicKey, fabricID: fabricID)
-        return CASE.Identity(noc: operationalCertificate, icac: nil, rcac: rootCertificate, operationalKey: operationalKey,
-                             ipk: Fabric.operationalGroupKey(epochKey: ipkEpochKey, compressedFabricID: compressed))
+        CASE.Identity(noc: operationalCertificate, icac: nil, rcac: rootCertificate, operationalKey: operationalKey, ipk: ipk)
     }
 
     /// Registers the client for subscription reports.
@@ -101,16 +102,24 @@ public actor Commissioner {
         let attestationElements = try TLVStruct(decoding: elements)
         guard try attestationElements.bytes(2) == nonce else { throw CommissioningError.attestationFailed("nonce") }
         let cdKey = try X509.parse(TestCredentials.cdSigningCertificate).publicKey
-        guard (try? CertificationDeclaration.verify(try attestationElements.bytes(1), key: cdKey)) != nil else {
-            throw CommissioningError.attestationFailed("certification declaration")
-        }
+        guard let declaration = try? CertificationDeclaration.verify(try attestationElements.bytes(1), key: cdKey),
+              let cdFields = try? TLVStruct(decoding: declaration)
+        else { throw CommissioningError.attestationFailed("certification declaration") }
+        // The declaration covers the DAC's vendor and product (Core §6.2.3.1).
+        let parsedDAC = try X509.parse(dac)
+        guard try cdFields.uint(1) == UInt64(parsedDAC.vendorID ?? 0),
+              try cdFields.elements(2).contains(where: { $0.value.uint == UInt64(parsedDAC.productID ?? 0) })
+        else { throw CommissioningError.attestationFailed("declaration does not cover the device") }
 
         // Operational credentials (Core §6.4.6).
+        let csrNonce = MatterCrypto.random(32)
         let csr = try TLVStruct(try responseFields(await command(credentials.id, credentials.Command.csrRequest,
-                                                                  [.field(0, .bytes(MatterCrypto.random(32)))], session: pase)))
+                                                                  [.field(0, .bytes(csrNonce))], session: pase)))
         let nocsrElements = try csr.bytes(0)
         try verify(try csr.bytes(1), of: nocsrElements + challenge, key: dacKey, "CSR signature")
-        let operationalKey = try CertificationRequest.publicKey(of: try TLVStruct(decoding: nocsrElements).bytes(1))
+        let nocsr = try TLVStruct(decoding: nocsrElements)
+        guard try nocsr.bytes(2) == csrNonce else { throw CommissioningError.attestationFailed("CSR nonce") }
+        let operationalKey = try CertificationRequest.publicKey(of: try nocsr.bytes(1))
         let noc = try issue(publicKey: Array(operationalKey.x963Representation), nodeID: nodeID)
 
         try check(try await command(credentials.id, credentials.Command.addTrustedRootCertificate,

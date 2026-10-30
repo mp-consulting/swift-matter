@@ -74,6 +74,7 @@ public actor MatterNode {
     let advertiser: (any NodeAdvertiser)?
     let logger: Logger
     private let verifier: PASEVerifier
+    private var started = false
 
     /// Loads or creates the node's identity from storage. `transport` defaults to UDP on the configured port.
     public init(configuration: NodeConfiguration, storage: any MatterStorage, transport: (any MatterTransport)? = nil,
@@ -105,6 +106,8 @@ public actor MatterNode {
     }
 
     public func start() async throws {
+        guard !started else { return }
+        started = true
         await commissioning.setLayer(layer)
         let commissioning = commissioning
         let pase = PASE.ResponderContext(verifier: { await commissioning.paseVerifier() },
@@ -124,21 +127,21 @@ public actor MatterNode {
             await advertiser?.advertiseCommissionable(current)
         }
         let port = configuration.port, parameters = layer.parameters
-        await fabrics.onChange { fabrics in
+        @Sendable func advertise(_ fabrics: [Fabric]) async {
             await advertiser?.advertiseOperational(fabrics.map {
                 OperationalAdvertisement(compressedFabricID: $0.compressedFabricID, nodeID: $0.nodeID, port: port, parameters: parameters)
             })
         }
+        await fabrics.onChange { await advertise($0) }
         let layer = layer
-        await commissioning.onRollback { index in await layer.removeSessions { $0.fabricIndex == index } }
-        await advertiser?.advertiseOperational(await fabrics.all.map {
-            OperationalAdvertisement(compressedFabricID: $0.compressedFabricID, nodeID: $0.nodeID, port: port, parameters: parameters)
-        })
+        await commissioning.onFabricRemoved { index in await layer.removeSessions { $0.fabricIndex == index } }
+        await advertise(await fabrics.all)
 
         if await fabrics.count == 0 {
             await commissioning.open(.basic, verifier: verifier, discriminator: setupPayload.discriminator,
                                      timeout: configuration.initialWindowTimeout)
-            logger.info("Not commissioned: manual pairing code \(setupPayload.manualCode)")
+            // The setup code is never logged (it is the passcode); applications show `setupPayload` themselves.
+            logger.info("Not commissioned: commissioning window open, discriminator \(setupPayload.discriminator)")
         }
     }
 
@@ -176,7 +179,7 @@ public actor MatterNode {
 
     /// The passcode, discriminator and verifier; generated values are kept so the QR code stays the same.
     private static func loadSetup(_ configuration: NodeConfiguration, storage: any MatterStorage) async throws -> Setup {
-        if let data = await storage.value(for: "setup"), let fields = try? TLVStruct(decoding: data),
+        if let data = await storage.value(for: StorageKey.setup), let fields = try? TLVStruct(decoding: data),
            let passcode = try? fields.uint(1, as: UInt32.self), let discriminator = try? fields.uint(2, as: UInt16.self),
            let salt = try? fields.bytes(3), let iterations = try? fields.uint(4), let serialized = try? fields.bytes(5),
            let verifier = try? SPAKE2Plus.Verifier(serialized: serialized),
@@ -192,13 +195,13 @@ public actor MatterNode {
         try await storage.setValue(TLVEncoder.encode(.structure([
             .field(1, .unsigned(UInt64(passcode))), .field(2, .unsigned(UInt64(discriminator))), .field(3, .bytes(verifier.salt)),
             .field(4, .unsigned(UInt64(verifier.iterations))), .field(5, .bytes(verifier.verifier.serialized)),
-        ])), for: "setup")
+        ])), for: StorageKey.setup)
         return Setup(passcode: passcode, discriminator: discriminator, verifier: verifier)
     }
 
     private static func loadAttestation(_ configuration: NodeConfiguration, storage: any MatterStorage) async throws -> DeviceAttestation {
         if let attestation = configuration.attestation { return attestation }
-        if let data = await storage.value(for: "attestation"), let fields = try? TLVStruct(decoding: data),
+        if let data = await storage.value(for: StorageKey.attestation), let fields = try? TLVStruct(decoding: data),
            let dac = try? fields.bytes(1), let pai = try? fields.bytes(2), let cd = try? fields.bytes(3), let key = try? fields.bytes(4) {
             return DeviceAttestation(dacCertificate: dac, paiCertificate: pai, certificationDeclaration: cd, dacPrivateKey: key)
         }
@@ -207,14 +210,14 @@ public actor MatterNode {
         try await storage.setValue(TLVEncoder.encode(.structure([
             .field(1, .bytes(attestation.dacCertificate)), .field(2, .bytes(attestation.paiCertificate)),
             .field(3, .bytes(attestation.certificationDeclaration)), .field(4, .bytes(attestation.dacPrivateKey)),
-        ])), for: "attestation")
+        ])), for: StorageKey.attestation)
         return attestation
     }
 
     private static func uniqueID(storage: any MatterStorage) async -> String {
-        if let data = await storage.value(for: "unique-id"), let id = String(bytes: data, encoding: .utf8) { return id }
-        let id = MatterCrypto.random(16).map { zeroPadded($0, width: 2, radix: 16) }.joined()
-        try? await storage.setValue(Array(id.utf8), for: "unique-id")
+        if let data = await storage.value(for: StorageKey.uniqueID), let id = String(bytes: data, encoding: .utf8) { return id }
+        let id = hexString(MatterCrypto.random(16))
+        try? await storage.setValue(Array(id.utf8), for: StorageKey.uniqueID)
         return id
     }
 }
