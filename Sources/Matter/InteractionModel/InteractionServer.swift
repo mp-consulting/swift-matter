@@ -63,11 +63,22 @@ public actor InteractionServer: ProtocolHandler {
             default: try await exchange.sendIMStatus(.invalidAction)
             }
         } catch let status as StatusError {
+            logger.debug("Interaction with \(exchange.initialSession.peerAddress) answered \(status.status)")
             try? await exchange.sendIMStatus(status.status)
         } catch let status as IMStatus {
+            logger.debug("Interaction with \(exchange.initialSession.peerAddress) answered \(status)")
             try? await exchange.sendIMStatus(status)
         } catch {
             logger.debug("Interaction with \(exchange.initialSession.peerAddress) failed: \(error)")
+        }
+    }
+
+    // MARK: - Diagnostics
+
+    static func describe(_ result: InvokeResult) -> String {
+        switch result {
+        case .response(let command, _): "response 0x\(String(command, radix: 16))"
+        case .status(let status): "\(status.status)\(status.clusterStatus.map { " (cluster status \($0))" } ?? "")"
         }
     }
 
@@ -153,6 +164,8 @@ public actor InteractionServer: ProtocolHandler {
         let spec = try readSpec(try TLVStruct(decoding: message.payload), attributes: 0, events: 1, eventFilters: 2,
                                 fabricFiltered: 3, dataVersionFilters: 4)
         let session = await exchange.session
+        logger.debug("Read of \(spec.attributes.count) attribute and \(spec.events.count) event paths from \(session.peerAddress)")
+        logger.trace("Read paths: \(spec.attributes.map(\.description).joined(separator: ", "))")
         let attributes = await attributeReports(spec.attributes, session: session, fabricFiltered: spec.fabricFiltered,
                                                 filters: spec.dataVersionFilters)
         let events = await eventReports(spec.events, session: session, minimum: spec.eventMinimum)
@@ -336,6 +349,7 @@ public actor InteractionServer: ProtocolHandler {
                 guard let pathValue = data[1], let value = data[2] else { throw StatusError(.invalidAction) }
                 let path = try AttributePath(tlv: pathValue)
                 let status = await write(path, value: value, dataVersion: try? data.uint(0, as: UInt32.self), context: context)
+                logger.debug("Write \(path) from \(session.peerAddress): \(status.status)")
                 statuses.append(TLVElement(.structure([.field(0, path.tlv), .field(1, status.tlv)])))
             }
             let more = fields[3]?.bool ?? false
@@ -404,6 +418,8 @@ public actor InteractionServer: ProtocolHandler {
             let ref = data[2]?.uint
             if requests.count > 1, ref == nil { throw StatusError(.invalidAction) }
             let result = await invoke(path, fields: data[1] ?? .structure([]), context: context)
+            // The command and its outcome, never its fields (they carry certificates and keys).
+            logger.debug("Invoke \(path) from \(session.peerAddress): \(Self.describe(result))")
             var response: [TLVElement]
             switch result {
             case .response(let command, let responseFields):

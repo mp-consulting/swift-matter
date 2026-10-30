@@ -111,7 +111,7 @@ public struct AttributePath: Hashable, Sendable, CustomStringConvertible {
 }
 
 /// A command path (CommandPathIB, Core §10.6.11).
-public struct CommandPath: Hashable, Sendable {
+public struct CommandPath: Hashable, Sendable, CustomStringConvertible {
     public var endpoint: EndpointNumber?
     public var cluster: ClusterID
     public var command: CommandID
@@ -120,6 +120,10 @@ public struct CommandPath: Hashable, Sendable {
         self.endpoint = endpoint
         self.cluster = cluster
         self.command = command
+    }
+
+    public var description: String {
+        "\(endpoint.map { "0x" + String($0, radix: 16) } ?? "*")/0x\(String(cluster, radix: 16))/0x\(String(command, radix: 16))"
     }
 
     var tlv: TLVValue {
