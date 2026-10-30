@@ -72,8 +72,11 @@ public actor Groups {
     private let storage: any MatterStorage
     private let fabricTable: FabricTable
     private var observers: [@Sendable ([SocketAddress]) async -> Void] = []
-    /// The Global Group Encrypted Data and Control Message Counters (Core §4.6.1): kept across restarts.
+    /// The Global Group Encrypted Data and Control Message Counters (Core §4.6.1): kept across restarts. Control
+    /// counters are reserved in blocks: storage holds the end of the block, where a restart picks up.
     private var counters: (data: UInt32, control: UInt32)
+    private var reservedControl: UInt32
+    static let counterBlock: UInt32 = 1000
 
     public init(storage: any MatterStorage, fabrics: FabricTable) async {
         self.storage = storage
@@ -85,6 +88,7 @@ public actor Groups {
         } else {
             counters = (MessageCounter.initialValue(), MessageCounter.initialValue())
         }
+        reservedControl = counters.control
     }
 
     /// Called with the multicast addresses to listen on whenever memberships change.
@@ -101,7 +105,8 @@ public actor Groups {
         let id = try fields.uint(S.groupKeySetId, as: UInt16.self)
         let policy = try fields.uint(S.groupKeySecurityPolicy, as: UInt8.self)
         typealias Policy = GroupKeyManagementCluster.GroupKeySecurityPolicyEnum
-        guard id != 0, UInt64(policy) == Policy.trustFirst || UInt64(policy) == Policy.cacheAndSync else { throw StatusError(.invalidCommand) }
+        let cacheAndSync = UInt64(policy) == Policy.cacheAndSync
+        guard id != 0, UInt64(policy) == Policy.trustFirst || cacheAndSync else { throw StatusError(.invalidCommand) }
         // The three slots, key and start time each, null or absent alike; empty slots may only trail.
         func present(_ tag: UInt8) -> TLVValue? { fields[tag].flatMap { $0 == .null ? nil : $0 } }
         var slots = [(S.epochKey0, S.epochStartTime0), (S.epochKey1, S.epochStartTime1), (S.epochKey2, S.epochStartTime2)]
@@ -122,7 +127,7 @@ public actor Groups {
         guard state.keySets[id] != nil || state.keySets.count < Self.maxKeySetsPerFabric else { throw StatusError(.resourceExhausted) }
         state.keySets[id] = KeySet(keys: try epochs.map { epoch in
             try Self.operationalKey(Fabric.operationalGroupKey(epochKey: epoch.key, compressedFabricID: compressed), startTime: epoch.start)
-        }, cacheAndSync: UInt64(policy) == GroupKeyManagementCluster.GroupKeySecurityPolicyEnum.cacheAndSync)
+        }, cacheAndSync: cacheAndSync)
         fabrics[fabric] = state
         try await save()
     }
@@ -133,7 +138,9 @@ public actor Groups {
         guard let set = fabrics[fabric]?.keySets[id] else { return nil }
         let starts = [S.epochStartTime0, S.epochStartTime1, S.epochStartTime2]
         var fields: [TLVElement] = [.field(S.groupKeySetId, .unsigned(UInt64(id))),
-                                    .field(S.groupKeySecurityPolicy, .unsigned(set.cacheAndSync ? 1 : 0))]
+                                    .field(S.groupKeySecurityPolicy, .unsigned(set.cacheAndSync
+                                        ? GroupKeyManagementCluster.GroupKeySecurityPolicyEnum.cacheAndSync
+                                        : GroupKeyManagementCluster.GroupKeySecurityPolicyEnum.trustFirst))]
         for (slot, (keyTag, startTag)) in zip([S.epochKey0, S.epochKey1, S.epochKey2], starts).enumerated() {
             fields.append(.field(keyTag, .null))
             fields.append(.field(startTag, set.keys.indices.contains(slot) ? .unsigned(set.keys[slot].startTime) : .null))
@@ -308,16 +315,11 @@ public actor Groups {
 
     /// A peer's counter, per counter type (Core §4.18.4): control messages and trust-first keys trust the first
     /// authenticated counter; a cache-and-sync key waits for MCSP to learn it.
-    func check(_ counter: UInt32, fabric: FabricIndex, source: NodeID, control: Bool, cacheAndSync: Bool) -> CounterCheck {
+    func check(_ counter: UInt32, fabric: FabricIndex, source: NodeID, control: Bool, cacheAndSync: Bool = false) -> CounterCheck {
         let key = PeerKey(fabric: fabric, source: source, control: control)
-        guard var state = peers[key] else {
-            if cacheAndSync, !control { return .unsynchronized }
-            // Trust-first: this first counter is received, so a replay of it is not new.
-            var state = MessageReceptionState(policy: .rolling)
-            _ = state.accept(counter)
-            peers[key] = state
-            return .new
-        }
+        if peers[key] == nil, cacheAndSync, !control { return .unsynchronized }
+        // Trust-first: a first counter is accepted, and received.
+        var state = peers[key] ?? MessageReceptionState(policy: .rolling)
         defer { peers[key] = state }
         return state.accept(counter) ? .new : .duplicate
     }
@@ -330,14 +332,17 @@ public actor Groups {
     /// The node's id on a fabric: the source of its MCSP messages.
     func nodeID(fabric: FabricIndex) async -> NodeID? { await fabricTable.fabric(fabric)?.nodeID }
 
-    /// The next Global Group Encrypted Control Message Counter, saved before it is used.
+    /// The next Global Group Encrypted Control Message Counter: from a block reserved in storage before its first use,
+    /// so a restart never reuses one and storage is written once per block.
     func nextControlCounter() async -> UInt32 {
-        let counter = counters.control
-        counters.control &+= 1
-        try? await storage.setValue(TLVEncoder.encode(.structure([.field(1, .unsigned(UInt64(counters.data))),
-                                                                  .field(2, .unsigned(UInt64(counters.control)))])),
-                                    for: StorageKey.groupCounters)
-        return counter
+        if counters.control == reservedControl {
+            reservedControl = counters.control &+ Self.counterBlock
+            try? await storage.setValue(TLVEncoder.encode(.structure([.field(1, .unsigned(UInt64(counters.data))),
+                                                                      .field(2, .unsigned(UInt64(reservedControl)))])),
+                                        for: StorageKey.groupCounters)
+        }
+        defer { counters.control &+= 1 }
+        return counters.control
     }
 
     /// The Global Group Encrypted Data Message Counter, for a MsgCounterSyncRsp: this node sends no group data.

@@ -14,6 +14,17 @@ struct GroupVectorTests {
         #expect(Groups.nodeID(of: 0x3344) == 0xFFFF_FFFF_FFFF_3344)
     }
 
+    @Test func neverReusesAControlCounterAcrossRestarts() async throws {
+        let storage = MemoryStorage()
+        let fabrics = await FabricTable(storage: storage)
+        let groups = await Groups(storage: storage, fabrics: fabrics)
+        let first = await groups.nextControlCounter()
+        #expect(await groups.nextControlCounter() == first &+ 1)
+        // A restart continues after the block the first run reserved.
+        let restarted = await Groups(storage: storage, fabrics: fabrics)
+        #expect(await restarted.nextControlCounter() == first &+ Groups.counterBlock)
+    }
+
     @Test func obfuscatesTheHeaderAndRestoresIt() throws {
         let key = hex("a6f5306baf6d050af23ba4bd6b9dd960")
         let payloadHeader = PayloadHeader(isInitiator: true, needsAck: false, opcode: 8, exchangeID: 1, protocolID: .interactionModel)
@@ -66,7 +77,6 @@ struct GroupTests {
     }
 
     func groupInvoke(_ fixture: BridgeTests.Fixture, _ command: CommandID, counter: UInt32) async throws -> [UInt8] {
-        let compressed = try #require(await fixture.base.node.fabrics.fabric(1)).compressedFabricID
         let payload = TLVEncoder.encode(.structure([
             .field(0, .bool(true)), .field(1, .bool(false)),
             // A group's command path has no endpoint (Core §8.2.3).
@@ -76,8 +86,7 @@ struct GroupTests {
         return try Message.groupFrame(
             payloadHeader: PayloadHeader(isInitiator: true, needsAck: false, opcode: IMOpcode.invokeRequest.rawValue, exchangeID: .random(in: 0...UInt16.max),
                                          protocolID: .interactionModel),
-            payload: payload, group: Self.group, source: 0x1122, counter: counter,
-            operationalKey: Fabric.operationalGroupKey(epochKey: epochKey, compressedFabricID: compressed))
+            payload: payload, group: Self.group, source: 0x1122, counter: counter, operationalKey: try await operationalKey(fixture))
     }
 
     @Test func runsAGroupCommandOnTheGroupsEndpoints() async throws {
@@ -132,6 +141,18 @@ struct GroupTests {
         return try Message.open(frame: clear, header: header, headerLength: length, key: AESCCM(key: key), nonceSourceNodeID: try #require(header.source))
     }
 
+    /// The sender's MsgCounterSyncRsp to a request: its counter and the challenge, on the request's exchange.
+    func syncResponse(to request: Message, counter: UInt32, key: [UInt8]) throws -> [UInt8] {
+        var payload: [UInt8] = []
+        payload.appendLittleEndian(counter)
+        return try Message.groupFrame(
+            payloadHeader: PayloadHeader(isInitiator: false, needsAck: true, ackedCounter: request.header.counter,
+                                         opcode: SecureChannelOpcode.messageCounterSyncResponse.rawValue,
+                                         exchangeID: request.payloadHeader.exchangeID, protocolID: .secureChannel),
+            payload: payload + request.payload, destination: .node(0x42), source: 0x1122, counter: .random(in: 1...1000), control: true,
+            operationalKey: key)
+    }
+
     @Test func synchronizesCountersBeforeRunningACacheAndSyncCommand() async throws {
         let fixture = try await BridgeTests.Fixture()
         let commands = fixture.commands
@@ -153,14 +174,7 @@ struct GroupTests {
         #expect(request.payloadHeader.opcode == SecureChannelOpcode.messageCounterSyncRequest.rawValue && request.payload.count == 8)
 
         // The answer carries the sender's counter and the challenge: the waiting command runs, once.
-        var payload: [UInt8] = []
-        payload.appendLittleEndian(UInt32(500))
-        let response = try Message.groupFrame(
-            payloadHeader: PayloadHeader(isInitiator: false, needsAck: true, ackedCounter: request.header.counter,
-                                         opcode: SecureChannelOpcode.messageCounterSyncResponse.rawValue,
-                                         exchangeID: request.payloadHeader.exchangeID, protocolID: .secureChannel),
-            payload: payload + request.payload, destination: .node(0x42), source: 0x1122, counter: 9000, control: true, operationalKey: key)
-        try await peer.send(response, to: .memory("node"))
+        try await peer.send(try syncResponse(to: request, counter: 500, key: key), to: .memory("node"))
         try await eventually { await commands.values == [.setOn(true)] }
         try await peer.send(on, to: .memory("node"))
         try await peer.send(try await groupInvoke(fixture, OnOffCluster.Command.off, counter: 501), to: .memory("node"))
@@ -179,14 +193,9 @@ struct GroupTests {
         try await eventually { await !received.values.isEmpty }
         // Past MSG_COUNTER_SYNC_TIMEOUT (scaled), the waiting command is dropped; a late answer finds nothing waiting.
         try await eventually { await fixture.base.node.layer.pendingSyncCount == 0 }
-        let request = try open(try #require(await received.values.first), key: try await operationalKey(fixture))
-        var payload: [UInt8] = []
-        payload.appendLittleEndian(UInt32(7))
-        try await peer.send(try Message.groupFrame(
-            payloadHeader: PayloadHeader(isInitiator: false, needsAck: true, opcode: SecureChannelOpcode.messageCounterSyncResponse.rawValue,
-                                         exchangeID: request.payloadHeader.exchangeID, protocolID: .secureChannel),
-            payload: payload + request.payload, destination: .node(0x42), source: 0x1122, counter: 1, control: true,
-            operationalKey: try await operationalKey(fixture)), to: .memory("node"))
+        let key = try await operationalKey(fixture)
+        let request = try open(try #require(await received.values.first), key: key)
+        try await peer.send(try syncResponse(to: request, counter: 7, key: key), to: .memory("node"))
         _ = try await fixture.read(2, OnOffCluster.id, OnOffCluster.Attribute.onOff)
         #expect(await commands.values.isEmpty)
     }

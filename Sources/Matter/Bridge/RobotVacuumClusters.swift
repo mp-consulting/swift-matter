@@ -1,5 +1,5 @@
 /// What a robot vacuum is doing, as it reports it (RVC Operational State, Application Clusters §7.4).
-public enum RobotState: Hashable, Sendable {
+public enum RobotState: Hashable, Sendable, CaseIterable {
     case stopped
     case running
     case paused
@@ -24,6 +24,11 @@ public enum RobotState: Hashable, Sendable {
 
     /// Cleaning, in RVC Run Mode's terms: under way or paused.
     var isCleaning: Bool { self == .running || self == .paused }
+
+    init?(operationalState: UInt64?) {
+        guard let state = Self.allCases.first(where: { $0.operationalState == operationalState }) else { return nil }
+        self = state
+    }
 }
 
 /// The robot vacuum's clusters: RVC Run Mode with an Idle and a Cleaning mode (the tags §7.2 requires), and RVC
@@ -68,21 +73,22 @@ extension DeviceClusters {
         typealias A = RvcOperationalStateCluster.Attribute
         typealias C = RvcOperationalStateCluster.Command
         typealias Error = RvcOperationalStateCluster.ErrorStateEnum
-        let states: [RobotState] = [.stopped, .running, .paused, .error, .seekingCharger, .charging, .docked]
         let cluster = AttributeCluster(RvcOperationalStateCluster.definition, attributes: [
             A.phaseList: .null, A.currentPhase: .null,
-            A.operationalStateList: .array(states.map { TLVElement(.structure([.field(0, .unsigned($0.operationalState))])) }),
+            A.operationalStateList: .array(RobotState.allCases.map { TLVElement(.structure([.field(0, .unsigned($0.operationalState))])) }),
             A.operationalState: .unsigned(RobotState.docked.operationalState),
             A.operationalError: errorState(Error.noError),
         ])
         /// Runs a command the current state allows, answering OperationalCommandResponse (§1.14.6.5).
         @Sendable func command(_ cluster: AttributeCluster, allowed: Set<RobotState>, _ deviceCommand: DeviceCommand) async -> InvokeResult {
-            let current = await cluster.value(A.operationalState)?.uint
-            var outcome = Error.noError
-            if !states.filter({ allowed.contains($0) }).map(\.operationalState).contains(current ?? .max) {
-                outcome = Error.commandInvalidInState
-            } else {
-                do { try await handler(deviceCommand) } catch { outcome = Error.unableToStartOrResume }
+            var outcome = Error.commandInvalidInState
+            if let current = RobotState(operationalState: await cluster.value(A.operationalState)?.uint), allowed.contains(current) {
+                do {
+                    try await handler(deviceCommand)
+                    outcome = Error.noError
+                } catch {
+                    outcome = Error.unableToStartOrResume
+                }
             }
             return .response(C.operationalCommandResponse, .structure([.field(0, errorState(outcome))]))
         }
@@ -112,8 +118,7 @@ extension DeviceClusters {
         if state == .error {
             await operational.emit(RvcOperationalStateCluster.Event.operationalError, data: .structure([.field(0, errorState(error))]))
         }
-        let wasCleaning = previous == RobotState.running.operationalState || previous == RobotState.paused.operationalState
-        if wasCleaning, !state.isCleaning {
+        if RobotState(operationalState: previous)?.isCleaning == true, !state.isCleaning {
             await operational.emit(RvcOperationalStateCluster.Event.operationCompletion, data: .structure([.field(0, .unsigned(error))]))
         }
     }

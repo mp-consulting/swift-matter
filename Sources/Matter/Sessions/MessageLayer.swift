@@ -495,7 +495,7 @@ public actor MessageLayer {
             case .node(let node) where decoded.isControl:
                 // MCSP between two nodes under the group key (Core §4.18.5): addressed to this node only.
                 guard await groups.nodeID(fabric: candidate.fabric) == node,
-                      await groups.check(decoded.counter, fabric: candidate.fabric, source: source, control: true, cacheAndSync: false) == .new
+                      await groups.check(decoded.counter, fabric: candidate.fabric, source: source, control: true) == .new
                 else { return }
                 await counterSync(message, from: source, candidate: candidate, sessionID: header.sessionID, peer: peer)
             case .group(let group) where candidate.groups.contains(group) && !decoded.isControl:
@@ -539,7 +539,7 @@ public actor MessageLayer {
         let challenge: [UInt8]
         let exchangeID: UInt16
         var queued: [(Message, SessionInfo)]
-        var timeout: Task<Void, Never>?
+        let timeout: Task<Void, Never>
     }
 
     private var pendingSyncs: [SyncKey: PendingSync] = [:]
@@ -547,6 +547,8 @@ public actor MessageLayer {
     var pendingSyncCount: Int { pendingSyncs.count }
     static let syncJitter: Duration = .milliseconds(500)
     static let syncTimeout: Duration = .milliseconds(400)
+    /// Messages kept per synchronization; older ones give way.
+    static let syncQueueLimit = 8
 
     /// A data message from a peer whose counter a cache-and-sync key must learn first: kept, and the peer asked, after
     /// a random wait, with a MsgCounterSyncReq; the messages are dropped if no answer comes in time (Core §4.18.5).
@@ -555,24 +557,23 @@ public actor MessageLayer {
         let key = SyncKey(fabric: fabric, peer: session.peerNodeID, sessionID: session.localSessionID)
         if pendingSyncs[key] != nil {
             pendingSyncs[key]?.queued.append((message, session))
+            if let count = pendingSyncs[key]?.queued.count, count > Self.syncQueueLimit { pendingSyncs[key]?.queued.removeFirst() }
             return
         }
         let challenge = MatterCrypto.random(8), exchangeID = allocateExchangeID()
-        pendingSyncs[key] = PendingSync(challenge: challenge, exchangeID: exchangeID, queued: [(message, session)])
         let jitter = reliability.scaled(Self.syncJitter * Double.random(in: 0...1)), timeout = reliability.scaled(Self.syncTimeout)
-        pendingSyncs[key]?.timeout = Task { [weak self] in
+        let task = Task { [weak self] in
             guard (try? await Task.sleep(for: jitter)) != nil else { return }
             await self?.sendSync(.messageCounterSyncRequest, challenge, to: session.peerNodeID, exchangeID: exchangeID, initiator: true,
                                  candidate: candidate, peer: session.peerAddress)
             guard (try? await Task.sleep(for: timeout)) != nil else { return }
-            await self?.dropSync(key, exchangeID: exchangeID)
+            // Cancelled when the answer came; otherwise the waiting messages are dropped.
+            await self?.dropSync(key)
         }
+        pendingSyncs[key] = PendingSync(challenge: challenge, exchangeID: exchangeID, queued: [(message, session)], timeout: task)
     }
 
-    private func dropSync(_ key: SyncKey, exchangeID: UInt16) {
-        guard pendingSyncs[key]?.exchangeID == exchangeID else { return }
-        pendingSyncs[key] = nil
-    }
+    private func dropSync(_ key: SyncKey) { pendingSyncs[key] = nil }
 
     /// A MsgCounterSyncReq is answered with this node's data counter; a MsgCounterSyncRsp matching the request in
     /// flight teaches the peer's, and the messages that waited on it are processed in order.
@@ -589,13 +590,13 @@ public actor MessageLayer {
             let key = SyncKey(fabric: candidate.fabric, peer: source, sessionID: sessionID)
             guard message.payload.count == 12, let pending = pendingSyncs[key], pending.exchangeID == message.payloadHeader.exchangeID,
                   MatterCrypto.equal(Array(message.payload[4...]), pending.challenge) else { return }
-            pending.timeout?.cancel()
+            pending.timeout.cancel()
             pendingSyncs[key] = nil
             var reader = ByteReader(message.payload, truncated: MessageError.truncated)
             guard let counter = try? reader.read(UInt32.self) else { return }
             await groups.synchronize(fabric: candidate.fabric, source: source, counter: counter)
             for (queued, session) in pending.queued
-            where await groups.check(queued.header.counter, fabric: candidate.fabric, source: source, control: false, cacheAndSync: true) == .new {
+            where await groups.check(queued.header.counter, fabric: candidate.fabric, source: source, control: false) == .new {
                 dispatchGroup(queued, session: session)
             }
         default:

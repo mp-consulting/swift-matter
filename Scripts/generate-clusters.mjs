@@ -132,9 +132,13 @@ function overlay(base, derived) {
 function mergeChildren(baseChildren, derivedChildren) {
     const key = child => `${child.kind}:${child.name}`;
     const own = new Map(derivedChildren.map(child => [key(child), child]));
-    const merged = baseChildren.map(child => own.has(key(child)) ? overlay(child, own.get(key(child))) : child);
-    const inherited = new Set(baseChildren.map(key));
-    return merged.concat(derivedChildren.filter(child => !inherited.has(key(child))));
+    const merged = baseChildren.map(child => {
+        const derived = own.get(key(child));
+        if (!derived) return child;
+        own.delete(key(child));
+        return overlay(child, derived);
+    });
+    return merged.concat([...own.values()]);
 }
 function resolved(cluster) {
     const base = cluster.type && cluster.type !== cluster.name ? clustersByName.get(cluster.type) : undefined;

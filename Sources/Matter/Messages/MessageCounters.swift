@@ -39,7 +39,7 @@ public struct MessageReceptionState: Sendable {
     /// A peer's counter learnt from it (MCSP, Core §4.18.5): its maximum, with the bitmap cleared. The spec calls it
     /// the peer's "current" counter, which may be the last one it used or the next: the maximum counts as not seen
     /// yet, so the message that triggered the synchronization is new either way, once.
-    public init(policy: Policy, learnt maxCounter: UInt32) {
+    init(policy: Policy, learnt maxCounter: UInt32) {
         self.policy = policy
         self.maxCounter = maxCounter
         window = 0
