@@ -79,6 +79,52 @@ struct BridgeTests {
         #expect(events.count == 1)
     }
 
+    @Test func reportsAlarmsAirQualityValvesAndEnergy() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let alarm = try await fixture.bridge.add(BridgedDeviceInfo(id: "smoke", name: "Hall"), kind: .smokeCOAlarm(smoke: true, carbonMonoxide: true))
+        let air = try await fixture.bridge.add(BridgedDeviceInfo(id: "air", name: "Bedroom"), kind: .airQualitySensor)
+        let valve = try await fixture.bridge.add(BridgedDeviceInfo(id: "valve", name: "Garden"), kind: .waterValve) { await commands.append($0) }
+        let plug = try await fixture.bridge.add(BridgedDeviceInfo(id: "plug", name: "Heater"), kind: DeviceKind.onOffPlug.metered())
+
+        // Smoke sounds: SmokeState critical, the expressed state follows, and the event is recorded; clearing it says so.
+        await alarm.update(.smoke(true))
+        typealias Smoke = SmokeCoAlarmCluster
+        #expect(try await fixture.read(alarm.endpoint, Smoke.id, Smoke.Attribute.smokeState) == .unsigned(Smoke.AlarmStateEnum.critical))
+        #expect(try await fixture.read(alarm.endpoint, Smoke.id, Smoke.Attribute.expressedState) == .unsigned(Smoke.ExpressedStateEnum.smokeAlarm))
+        await alarm.update(.carbonMonoxide(true))
+        await alarm.update(.smoke(false))
+        #expect(try await fixture.read(alarm.endpoint, Smoke.id, Smoke.Attribute.expressedState) == .unsigned(Smoke.ExpressedStateEnum.coAlarm))
+        await alarm.update(.carbonMonoxide(false))
+        let (_, events) = try await fixture.base.commissioner.client.read([], events: [EventPath(endpoint: alarm.endpoint, cluster: Smoke.id)],
+                                                                         session: fixture.session)
+        #expect(events.compactMap { report -> EventID? in if case .data(let record) = report { record.event } else { nil } }
+            == [Smoke.Event.smokeAlarm, Smoke.Event.coAlarm, Smoke.Event.allClear])
+
+        await air.update(.airQuality(4))
+        #expect(try await fixture.read(air.endpoint, AirQualityCluster.id, AirQualityCluster.Attribute.airQuality) == .unsigned(4))
+
+        // Opening a valve asks the device; its state comes back from it.
+        typealias Valve = ValveConfigurationAndControlCluster
+        _ = try await fixture.invoke(valve.endpoint, Valve.id, Valve.Command.open)
+        #expect(await commands.values == [.setValveOpen(true)])
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.targetState) == .unsigned(Valve.ValveStateEnum.open))
+        await valve.update(.valveOpen(true))
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.currentState) == .unsigned(Valve.ValveStateEnum.open))
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.targetState) == .null)
+
+        // A metered plug is an Electrical Sensor too, reporting milliwatts and milliwatt-hours.
+        let types = try await fixture.read(plug.endpoint, DescriptorCluster.id, DescriptorCluster.Attribute.deviceTypeList)
+        #expect(types.elements?.compactMap { $0.value[0]?.uint }.contains(UInt64(DeviceTypes.electricalSensor.id)) == true)
+        await plug.update(.power(watts: 1234.5))
+        await plug.update(.energy(kilowattHours: 2.5))
+        #expect(try await fixture.read(plug.endpoint, ElectricalPowerMeasurementCluster.id, ElectricalPowerMeasurementCluster.Attribute.activePower)
+            == .signed(1_234_500))
+        let energy = try await fixture.read(plug.endpoint, ElectricalEnergyMeasurementCluster.id,
+                                            ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported)
+        #expect(energy[0] == .signed(2_500_000))
+    }
+
     @Test func cutsLabelsByUTF8Bytes() {
         #expect("Lumière du salon éclairée ce soir".utf8Prefix(32).utf8.count <= 32)
         #expect("Lumière du salon éclairée ce soir".utf8Prefix(32) == "Lumière du salon éclairée ce ")

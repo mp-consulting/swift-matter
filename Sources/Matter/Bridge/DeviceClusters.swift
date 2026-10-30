@@ -21,6 +21,8 @@ public enum DeviceCommand: Hashable, Sendable {
     /// Thermostat SystemMode: off 0, cool 3, heat 4.
     case setThermostatMode(UInt8)
     case setLocked(Bool)
+    /// Open or close a water valve.
+    case setValveOpen(Bool)
     case identify(seconds: UInt16)
 }
 

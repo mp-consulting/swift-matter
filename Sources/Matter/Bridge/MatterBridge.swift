@@ -85,6 +85,23 @@ public struct DeviceKind: Sendable {
     }
     /// A button: presses are reported with `BridgedDevice.press`.
     public static let genericSwitch = sensor(DeviceTypes.genericSwitch) { DeviceClusters.genericSwitch() }
+    public static let airQualitySensor = sensor(DeviceTypes.airQualitySensor) { DeviceClusters.airQuality() }
+    public static func smokeCOAlarm(smoke: Bool = true, carbonMonoxide: Bool = false) -> DeviceKind {
+        sensor(DeviceTypes.smokeCoAlarm) { DeviceClusters.smokeCOAlarm(smoke: smoke, carbonMonoxide: carbonMonoxide) }
+    }
+    /// Opening and closing go to the handler; the valve's state comes back with `DeviceState.valveOpen`.
+    public static let waterValve = DeviceKind(deviceTypes: [DeviceTypes.waterValve]) { handler in
+        await base(handler, actuator: false) + [await DeviceClusters.valve(handler)]
+    }
+
+    /// The same device measuring its power and energy too: an Electrical Sensor on its endpoint (Device Library §2.5),
+    /// reported with `DeviceState.power` and `.energy`.
+    public func metered() -> DeviceKind {
+        let kind = self
+        return DeviceKind(deviceTypes: deviceTypes + [DeviceTypes.electricalSensor]) { handler in
+            await kind.makeClusters(handler) + DeviceClusters.metering()
+        }
+    }
 }
 
 /// One function of a device, with the handler of its commands and tags that tell it from the device's other parts.
@@ -152,6 +169,16 @@ public enum DeviceState: Hashable, Sendable {
     case thermostatMode(UInt8)
     /// Nil when the lock is neither locked nor unlocked (jammed, in motion).
     case locked(Bool?)
+    /// Air Quality's AirQualityEnum: unknown 0, good 1 to extremely poor 6.
+    case airQuality(UInt8)
+    case smoke(Bool)
+    case carbonMonoxide(Bool)
+    /// Where the valve is now, open or closed.
+    case valveOpen(Bool)
+    /// Watts drawn now; a metered device's.
+    case power(watts: Double?)
+    /// Energy used since the meter started, kWh; a metered device's.
+    case energy(kilowattHours: Double?)
 }
 
 /// A press of a bridged button (Generic Switch).
@@ -251,6 +278,31 @@ public actor BridgedDevice {
         case .locked(let locked):
             // LockState: not fully locked 0, locked 1, unlocked 2.
             await set(DoorLockCluster.id, [DoorLockCluster.Attribute.lockState: .unsigned(locked.map { $0 ? 1 : 2 } ?? 0)])
+        case .airQuality(let quality):
+            await set(AirQualityCluster.id, [AirQualityCluster.Attribute.airQuality: .unsigned(UInt64(min(quality, 6)))])
+        case .smoke(let detected):
+            if let cluster = cluster(SmokeCoAlarmCluster.id, part: part) { await DeviceClusters.setAlarm(cluster, smoke: true, detected: detected) }
+        case .carbonMonoxide(let detected):
+            if let cluster = cluster(SmokeCoAlarmCluster.id, part: part) { await DeviceClusters.setAlarm(cluster, smoke: false, detected: detected) }
+        case .valveOpen(let open):
+            guard let cluster = cluster(ValveConfigurationAndControlCluster.id, part: part) else { return }
+            await DeviceClusters.setValve(cluster, open: open)
+        case .power(let watts):
+            let value = scaled(watts, by: 1000, in: Double(DeviceClusters.powerRange.lowerBound)...Double(DeviceClusters.powerRange.upperBound))
+            await set(ElectricalPowerMeasurementCluster.id, [ElectricalPowerMeasurementCluster.Attribute.activePower: value.map { .signed(Int64($0)) } ?? .null])
+        case .energy(let kilowattHours):
+            typealias S = ElectricalEnergyMeasurementCluster.EnergyMeasurementStruct
+            guard let cluster = cluster(ElectricalEnergyMeasurementCluster.id, part: part) else { return }
+            guard let milliwattHours = scaled(kilowattHours, by: 1_000_000, in: 0...Double(Int64.max / 2)) else {
+                await cluster.set(ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported, .null)
+                return
+            }
+            let previous = await cluster.value(ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported)?[S.energy]?.int
+            guard previous != Int64(milliwattHours) else { return }
+            let measurement = TLVValue.structure([.field(S.energy, .signed(Int64(milliwattHours))),
+                                                  .field(S.endTimestamp, .unsigned(DeviceClusters.matterEpochSeconds()))])
+            await cluster.set(ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported, measurement)
+            await cluster.emit(ElectricalEnergyMeasurementCluster.Event.cumulativeEnergyMeasured, data: .structure([.field(0, measurement)]))
         case .battery(let percent):
             // BatPercentRemaining is in half percents; the charge level warns below 20 % and is critical below 10 %.
             let clamped = UInt64(min(percent, 100))
