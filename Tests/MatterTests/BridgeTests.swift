@@ -62,6 +62,8 @@ struct BridgeTests {
         let temperature = try await fixture.bridge.add(BridgedDeviceInfo(id: "t", name: "Office"), kind: .temperatureSensor)
         let door = try await fixture.bridge.add(BridgedDeviceInfo(id: "d", name: "Door"), kind: .contactSensor, battery: true)
         let light = try await fixture.bridge.add(BridgedDeviceInfo(id: "l", name: "Lux"), kind: .lightSensor)
+        let leak = try await fixture.bridge.add(BridgedDeviceInfo(id: "w", name: "Sink"), kind: .waterLeakDetector)
+        await leak.update(.leak(true))
         await temperature.update(.temperature(21.56))
         await door.update(.contact(true))
         await door.update(.battery(percent: 15))
@@ -71,6 +73,7 @@ struct BridgeTests {
         #expect(try await fixture.read(3, PowerSourceCluster.id, PowerSourceCluster.Attribute.batPercentRemaining) == .unsigned(30))
         #expect(try await fixture.read(3, PowerSourceCluster.id, PowerSourceCluster.Attribute.batChargeLevel) == .unsigned(1))
         #expect(try await fixture.read(4, IlluminanceMeasurementCluster.id, 0) == .unsigned(30001))
+        #expect(try await fixture.read(5, BooleanStateCluster.id, BooleanStateCluster.Attribute.stateValue) == .bool(true))
         // The contact change was recorded as an event.
         let (_, events) = try await fixture.base.commissioner.client.read([], events: [EventPath(endpoint: 3)], session: fixture.session)
         #expect(events.count == 1)

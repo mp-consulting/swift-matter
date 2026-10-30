@@ -51,6 +51,7 @@ public struct DeviceKind: Sendable {
     public static let onOffPlug = switched(DeviceTypes.onOffPlugInUnit, lighting: false, dimmable: false)
     public static let dimmablePlug = switched(DeviceTypes.dimmablePlugInUnit, lighting: false, dimmable: true)
     public static let contactSensor = sensor(DeviceTypes.contactSensor) { DeviceClusters.booleanState() }
+    public static let waterLeakDetector = sensor(DeviceTypes.waterLeakDetector) { DeviceClusters.booleanState() }
     public static let occupancySensor = sensor(DeviceTypes.occupancySensor) { DeviceClusters.occupancySensing() }
     public static let temperatureSensor = sensor(DeviceTypes.temperatureSensor) {
         DeviceClusters.measurement(TemperatureMeasurementCluster.definition, value: .null, minimum: .signed(-5000), maximum: .signed(10000))
@@ -119,6 +120,8 @@ public enum DeviceState: Hashable, Sendable {
     case hueSaturation(hue: UInt8, saturation: UInt8)
     /// Contact sensors: true when the contact is closed.
     case contact(Bool)
+    /// Water leak detectors: true when a leak is detected.
+    case leak(Bool)
     case occupied(Bool)
     /// Degrees Celsius.
     case temperature(Double?)
@@ -197,11 +200,11 @@ public actor BridgedDevice {
         case .level(let level): await set(LevelControlCluster.id, [LevelControlCluster.Attribute.currentLevel: .unsigned(UInt64(max(1, min(254, level))))])
         case .colorTemperature(let mireds): await set(ColorControlCluster.id, DeviceClusters.colorTemperatureValues(mireds))
         case .hueSaturation(let hue, let saturation): await set(ColorControlCluster.id, DeviceClusters.hueSaturationValues(hue: hue, saturation: saturation))
-        case .contact(let closed):
+        case .contact(let value), .leak(let value):
             let cluster = cluster(BooleanStateCluster.id, part: part)
-            guard await cluster?.value(BooleanStateCluster.Attribute.stateValue) != .bool(closed) else { return }
-            await cluster?.set(BooleanStateCluster.Attribute.stateValue, .bool(closed))
-            await cluster?.emit(BooleanStateCluster.Event.stateChange, data: .structure([.field(0, .bool(closed))]))
+            guard await cluster?.value(BooleanStateCluster.Attribute.stateValue) != .bool(value) else { return }
+            await cluster?.set(BooleanStateCluster.Attribute.stateValue, .bool(value))
+            await cluster?.emit(BooleanStateCluster.Event.stateChange, data: .structure([.field(0, .bool(value))]))
         case .occupied(let occupied):
             await set(OccupancySensingCluster.id, [OccupancySensingCluster.Attribute.occupancy: .unsigned(occupied ? 1 : 0)])
         case .temperature(let celsius):

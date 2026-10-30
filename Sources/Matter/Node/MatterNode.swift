@@ -165,6 +165,11 @@ public actor MatterNode {
         await commissioning.open(.basic, verifier: verifier, discriminator: setupPayload.discriminator, timeout: timeout)
     }
 
+    /// Removes a fabric, as RemoveFabric from one of its administrators would: its ACL entries and sessions go with it.
+    public func removeFabric(_ index: FabricIndex) async throws {
+        try await commissioning.removeFabric(index)
+    }
+
     // MARK: - Endpoints
 
     public func add(_ endpoint: Endpoint) async throws { try await dataModel.add(endpoint) }
