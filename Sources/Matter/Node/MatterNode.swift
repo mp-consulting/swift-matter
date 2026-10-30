@@ -62,15 +62,15 @@ public struct OperationalAdvertisement: Hashable, Sendable {
 /// A Matter node: a root endpoint with the commissioning clusters, the endpoints an application adds, and the
 /// protocols that serve them.
 public actor MatterNode {
-    public let configuration: NodeConfiguration
-    public let storage: any MatterStorage
-    public let dataModel: DataModel
-    public let fabrics: FabricTable
-    public let accessControl: AccessControlEntries
-    public let commissioning: Commissioning
-    public let layer: MessageLayer
-    public let interactionServer: InteractionServer
-    public let setupPayload: SetupPayload
+    public nonisolated let configuration: NodeConfiguration
+    public nonisolated let storage: any MatterStorage
+    public nonisolated let dataModel: DataModel
+    public nonisolated let fabrics: FabricTable
+    public nonisolated let accessControl: AccessControlEntries
+    public nonisolated let commissioning: Commissioning
+    public nonisolated let layer: MessageLayer
+    public nonisolated let interactionServer: InteractionServer
+    public nonisolated let setupPayload: SetupPayload
     let advertiser: (any NodeAdvertiser)?
     let logger: Logger
     private let verifier: PASEVerifier
