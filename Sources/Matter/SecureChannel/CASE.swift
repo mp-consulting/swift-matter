@@ -42,24 +42,24 @@ public enum CASE {
             return next
         }
 
-        /// The ticket as the node stores it.
+        /// The ticket as the node stores it; a ticket without a fabric leaves field 4 out.
         var tlv: TLVElement {
-            TLVElement(.structure([
+            var fields: [TLVElement] = [
                 .field(0, .bytes(id)), .field(1, .bytes(sharedSecret)), .field(2, .unsigned(peerNodeID)), .field(3, .unsigned(localNodeID)),
-                .field(4, .unsigned(UInt64(fabricIndex ?? 0))),
                 .field(5, .array(caseAuthenticatedTags.map { TLVElement(.unsigned(UInt64($0))) })),
-            ]))
+            ]
+            if let fabricIndex { fields.append(.field(4, .unsigned(UInt64(fabricIndex)))) }
+            return TLVElement(.structure(fields))
         }
 
-        init?(tlv: TLVValue) {
-            guard let id = tlv[0]?.bytes, let secret = tlv[1]?.bytes, let peer = tlv[2]?.uint, let local = tlv[3]?.uint,
-                  let fabric = tlv[4]?.uint.flatMap(FabricIndex.init(exactly:)) else { return nil }
-            self.id = id
-            sharedSecret = secret
-            peerNodeID = peer
-            localNodeID = local
-            fabricIndex = fabric == 0 ? nil : fabric
-            caseAuthenticatedTags = (tlv[5]?.elements ?? []).compactMap { $0.value.uint.flatMap(UInt32.init(exactly:)) }
+        init(tlv: TLVValue) throws {
+            let fields = try TLVStruct(tlv)
+            id = try fields.bytes(0)
+            sharedSecret = try fields.bytes(1)
+            peerNodeID = try fields.uint(2)
+            localNodeID = try fields.uint(3)
+            fabricIndex = fields[4] == nil ? nil : try fields.uint(4, as: FabricIndex.self)
+            caseAuthenticatedTags = try fields.elements(5).map { try narrow($0.value) }
         }
     }
 
@@ -398,7 +398,7 @@ public actor ResumptionStore {
     /// Reads the stored tickets.
     func load() async {
         guard let data = await storage?.value(for: StorageKey.resumptions), let list = try? TLVDecoder.decode(data).value.elements else { return }
-        tickets = list.compactMap { CASE.ResumptionTicket(tlv: $0.value) }
+        tickets = list.compactMap { try? CASE.ResumptionTicket(tlv: $0.value) }
     }
 
     func put(_ ticket: CASE.ResumptionTicket) async {
@@ -422,8 +422,6 @@ public actor ResumptionStore {
         tickets.removeAll { $0.fabricIndex == index }
         await save()
     }
-
-    var count: Int { tickets.count }
 
     private func save() async {
         try? await storage?.setValue(TLVEncoder.encode(.array(tickets.map(\.tlv))), for: StorageKey.resumptions)

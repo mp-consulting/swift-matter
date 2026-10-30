@@ -156,7 +156,7 @@ public actor AccessControlEntries: AccessController {
     private var entries: [AccessControlEntry] = []
     private let storage: any MatterStorage
     /// The AuxiliaryACL's entries (Groupcast's), which grant as the ACL's do (Core §9.10.6.10).
-    private var auxiliary: (@Sendable () async -> [AccessControlEntry])?
+    private var auxiliary: [AccessControlEntry] = []
     private var observers: [@Sendable () -> Void] = []
 
     public init(storage: any MatterStorage) async {
@@ -184,13 +184,13 @@ public actor AccessControlEntries: AccessController {
 
     public func removeFabric(_ fabric: FabricIndex) async { await replace(fabric: fabric, with: []) }
 
-    public func useAuxiliary(_ provider: @escaping @Sendable () async -> [AccessControlEntry]) { auxiliary = provider }
+    public func setAuxiliary(_ entries: [AccessControlEntry]) { auxiliary = entries }
 
-    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) async -> Privilege? {
+    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Privilege? {
         // A PASE session commissions the node: it holds Administer implicitly (Core §6.6.2.9).
         if session.kind == .pase { return .administer }
-        // The AuxiliaryACL grants only to groups: other sessions need not ask for it.
-        let all = session.kind == .group ? entries + (await auxiliary?() ?? []) : entries
+        // The AuxiliaryACL grants only to groups.
+        let all = session.kind == .group ? entries + auxiliary : entries
         return all.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }.map(\.privilege).max()
     }
 

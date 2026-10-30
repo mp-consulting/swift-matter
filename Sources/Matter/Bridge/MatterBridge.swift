@@ -125,6 +125,9 @@ public struct DevicePart: Sendable {
         self.tags = tags
         self.handler = handler
     }
+
+    /// Its endpoint's tags: those its kind requires, then its own.
+    var endpointTags: [SemanticTag] { kind.tags + tags }
 }
 
 /// A bridged device's identity, shown in Bridged Device Basic Information (Core §9.13).
@@ -384,7 +387,7 @@ extension MatterNode {
             let first = index == 0
             try await add(Endpoint(number: endpoints[index],
                                    deviceTypes: part.kind.deviceTypes + (first && battery ? [DeviceTypes.powerSource] : []),
-                                   clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.kind.tags + part.tags))
+                                   clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.endpointTags))
         }
         return BridgedDevice(info: info, endpoint: 1, partEndpoints: endpoints, parts: partClusters,
                              basicInformation: await dataModel.cluster(BasicInformationCluster.id, on: 0) as? AttributeCluster, power: power)
@@ -452,11 +455,11 @@ public actor MatterBridge {
             topClusters = partClusters[0] + topClusters
         }
         try await node.add(Endpoint(number: top, deviceTypes: topTypes, clusters: topClusters, parent: aggregatorEndpoint,
-                                    tags: parts.count == 1 ? parts[0].kind.tags + parts[0].tags : []))
+                                    tags: parts.count == 1 ? parts[0].endpointTags : []))
         if parts.count > 1 {
             for (index, part) in parts.enumerated() {
                 try await node.add(Endpoint(number: partEndpoints[index], deviceTypes: part.kind.deviceTypes,
-                                            clusters: partClusters[index], parent: top, tags: part.kind.tags + part.tags))
+                                            clusters: partClusters[index], parent: top, tags: part.endpointTags))
             }
         }
         let device = BridgedDevice(info: info, endpoint: top, partEndpoints: partEndpoints, parts: partClusters,

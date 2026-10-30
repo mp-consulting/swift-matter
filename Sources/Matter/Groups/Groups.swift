@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 import NIOCore
 
 public typealias GroupID = UInt16
@@ -79,7 +80,8 @@ public actor Groups {
     /// Told when the AuxiliaryACL entries change, with the administrator that changed them if known, and the fabrics
     /// whose entries changed.
     var auxiliaryObservers: [@Sendable (NodeID?, [FabricIndex]) async -> Void] = []
-    var testing: Testing?
+    /// The fabric under Groupcast testing and until when: read without a hop by every group message.
+    nonisolated let testing = NIOLockedValueBox<Testing?>(nil)
     var testReporters: [@Sendable (TLVValue) async -> Void] = []
     /// The AuxiliaryACL entries last announced: a change of them, whatever caused it, is announced once.
     private var announcedAuxiliary: [AccessControlEntry] = []
@@ -294,9 +296,8 @@ public actor Groups {
         for observer in observers { await observer(addresses) }
         let auxiliary = auxiliaryEntries
         if auxiliary != announcedAuxiliary {
-            let changed = Set(auxiliary.map(\.fabricIndex)).union(announcedAuxiliary.map(\.fabricIndex)).filter { fabric in
-                auxiliary.filter { $0.fabricIndex == fabric } != announcedAuxiliary.filter { $0.fabricIndex == fabric }
-            }.sorted()
+            let now = Dictionary(grouping: auxiliary, by: \.fabricIndex), before = Dictionary(grouping: announcedAuxiliary, by: \.fabricIndex)
+            let changed = Set(now.keys).union(before.keys).filter { now[$0] != before[$0] }.sorted()
             announcedAuxiliary = auxiliary
             for observer in auxiliaryObservers { await observer(admin, changed) }
         }
@@ -408,7 +409,7 @@ public actor Groups {
 
     // MARK: - Storage
 
-    func save() async throws {
+    private func save() async throws {
         try await storage.setValue(TLVEncoder.encode(Self.encode(fabrics)), for: StorageKey.groups)
     }
 

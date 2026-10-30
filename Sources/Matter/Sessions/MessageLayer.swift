@@ -487,7 +487,6 @@ public actor MessageLayer {
         typealias Result = GroupcastCluster.GroupcastTestResultEnum
         let candidates = await groups.candidates(sessionID: header.sessionID)
         if candidates.isEmpty { await groups.reportTest(Result.noAvailableKey, fabric: nil) }
-        var authenticated = false
         for candidate in candidates {
             // The header's counter, source and destination are readable only once the privacy is removed.
             guard let clear = try? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy),
@@ -495,7 +494,6 @@ public actor MessageLayer {
                   let message = try? Message.open(frame: clear, header: decoded, headerLength: headerLength, key: candidate.key,
                                                   nonceSourceNodeID: source)
             else { continue }
-            authenticated = true
             switch decoded.destination {
             case .node(let node) where decoded.isControl:
                 // MCSP between two nodes under the group key (Core §4.18.5): addressed to this node only.
@@ -516,8 +514,8 @@ public actor MessageLayer {
             }
             return
         }
-        // No key opened it: reported to a fabric under Groupcast testing (Core §11.27.7.6).
-        if !candidates.isEmpty, !authenticated { await groups.reportTest(Result.failedAuth, fabric: nil) }
+        // A message a key opened returned above: none did (Core §11.27.7.6).
+        if !candidates.isEmpty { await groups.reportTest(Result.failedAuth, fabric: nil) }
     }
 
     /// Hands an authenticated group message to its protocol, after the ones before it (nothing answers them to keep a

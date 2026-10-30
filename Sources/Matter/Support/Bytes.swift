@@ -66,3 +66,10 @@ extension String {
         return String(self[..<end])
     }
 }
+
+extension Array {
+    /// The array in consecutive slices of `size` elements, the last one shorter.
+    func chunks(of size: Int) -> [ArraySlice<Element>] {
+        stride(from: 0, to: count, by: size).map { self[$0..<Swift.min($0 + size, count)] }
+    }
+}

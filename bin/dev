@@ -61,8 +61,9 @@ case "$command" in
         "$SCRATCH/debug/matter-bridge-demo" --storage "$work/demo" --passcode 20202021 --discriminator 3840 > "$work/demo.log" 2>&1 &
         demo=$!
         trap 'kill $demo 2>/dev/null; rm -rf "$work"' EXIT
-        # Until the demo prints its pairing code: it is listening and advertising.
-        for _ in $(seq 100); do grep -q "Manual pairing code" "$work/demo.log" && break; sleep 0.1; done
+        # Until the node logs its open window (standard error, unbuffered): it is listening and advertising.
+        for _ in $(seq 300); do grep -q "commissioning window open" "$work/demo.log" && break; sleep 0.1; done
+        grep -q "commissioning window open" "$work/demo.log" || { echo "The demo did not start:"; cat "$work/demo.log"; exit 1; }
         "$venv/bin/python" -I Scripts/interop.py "$work" || { tail -n 40 "$work/demo.log"; exit 1; }
         ;;
     generate)

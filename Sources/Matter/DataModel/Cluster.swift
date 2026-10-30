@@ -11,6 +11,8 @@ public struct AccessContext: Sendable {
     public var exchange: Exchange?
     /// The node's groups, for the Groups cluster.
     public var groups: Groups?
+    /// The privilege the session holds on the command's cluster, for commands whose fields need more than the command.
+    public var privilege: Privilege?
 
     public init(session: SessionInfo, isFabricFiltered: Bool = true, isTimed: Bool = false, exchange: Exchange? = nil, groups: Groups? = nil) {
         self.session = session
@@ -35,10 +37,11 @@ public enum InvokeResult: Sendable {
 public struct ChangeReporter: Sendable {
     let report: @Sendable (_ endpoint: EndpointNumber, _ cluster: ClusterID, _ attributes: [AttributeID]) -> Void
     let emit: @Sendable (_ endpoint: EndpointNumber, _ cluster: ClusterID, _ event: EventID, _ priority: EventDefinition.Priority,
-                         _ data: TLVValue) async -> Void
+                         _ data: TLVValue, _ fabric: FabricIndex?) async -> Void
 
     public init(report: @escaping @Sendable (EndpointNumber, ClusterID, [AttributeID]) -> Void,
-                emit: @escaping @Sendable (EndpointNumber, ClusterID, EventID, EventDefinition.Priority, TLVValue) async -> Void = { _, _, _, _, _ in }) {
+                emit: @escaping @Sendable (EndpointNumber, ClusterID, EventID, EventDefinition.Priority, TLVValue, FabricIndex?) async -> Void
+                    = { _, _, _, _, _, _ in }) {
         self.report = report
         self.emit = emit
     }
@@ -193,7 +196,10 @@ public actor AttributeCluster: ClusterHandler {
 
     /// Records one of the cluster's events (Core §7.14), at the priority its definition gives unless told otherwise.
     public func emit(_ event: EventID, data: TLVValue, priority: EventDefinition.Priority? = nil) async {
-        await reporter.emit(endpoint, definition.id, event, priority ?? definition.event(event)?.priority ?? .info, data)
+        let definition = definition.event(event)
+        // A fabric-sensitive event's data carries its fabric (Core §7.19.2.40): only that fabric reads it.
+        let fabric = definition?.fabricSensitive == true ? data[fabricIndexFieldTag]?.uint.flatMap(FabricIndex.init(exactly:)) : nil
+        await reporter.emit(endpoint, self.definition.id, event, priority ?? definition?.priority ?? .info, data, fabric)
     }
 
     /// Reports a computed attribute as changed.

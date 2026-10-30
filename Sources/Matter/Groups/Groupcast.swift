@@ -1,8 +1,13 @@
+import NIOConcurrencyHelpers
+
 /// Groupcast (Core §11.27) on the node's groups: a group joined in one command with its endpoints and key, on the IANA
 /// address or its own, and the AuxiliaryACL entries that let its senders operate its endpoints.
 extension Groups {
     /// Groups across all fabrics (MaxMembershipCount); a fabric may use half (§11.27.6.1), which is `maxGroupsPerFabric`.
     public static let maxMembershipCount = 2 * maxGroupsPerFabric
+    /// A JoinGroup's endpoints at most (§11.27.7.1.2), and a Membership entry's (§11.27.6.1).
+    static let endpointsPerJoin = 20
+    static let endpointsPerMembershipEntry = 255
 
     /// JoinGroup's effect (§11.27.7.1.7). `endpoints` are checked by the caller; `key` needs Administer, as
     /// `useAuxiliaryACL` does (`administer`).
@@ -12,18 +17,10 @@ extension Groups {
         var state = fabrics[fabric] ?? FabricGroups()
         guard state.memberships[group] != nil || state.memberships.count < Self.maxGroupsPerFabric else { throw StatusError(.resourceExhausted) }
         // Listener only: a membership has endpoints, none of them the root's.
-        guard !endpoints.isEmpty, endpoints.count <= 20 else { throw StatusError(.constraintError) }
+        guard !endpoints.isEmpty, endpoints.count <= Self.endpointsPerJoin else { throw StatusError(.constraintError) }
         guard !endpoints.contains(0) else { throw StatusError(.unsupportedEndpoint) }
-        if (key != nil || useAuxiliaryACL != nil), !administer { throw StatusError(.unsupportedAccess) }
-        if let key {
-            guard state.keySets[keySet] == nil else { throw StatusError(.alreadyExists) }
-            try await addKeySet(keySet, key: key, fabric: fabric)
-            state = fabrics[fabric] ?? state
-        } else {
-            guard state.keySets[keySet] != nil else { throw StatusError(.notFound) }
-        }
-        state.keyMap.removeAll { $0.group == group }
-        state.keyMap.append((group, keySet))
+        if useAuxiliaryACL != nil, !administer { throw StatusError(.unsupportedAccess) }
+        state = try await bind(group, to: keySet, key: key, fabric: fabric, administer: administer)
         var membership = state.memberships[group] ?? Membership(name: "", endpoints: [])
         membership.endpoints = replace ? Set(endpoints) : membership.endpoints.union(endpoints)
         membership.perGroupAddress = perGroupAddress
@@ -62,23 +59,13 @@ extension Groups {
         fabrics[fabric] = state
         try await groupcastChanged(by: admin)
         // Ambiguous over several groups, and limited to 20 (§11.27.7.3).
-        return group == 0 || removed.count > 20 ? [] : removed
+        return group == 0 || removed.count > Self.endpointsPerJoin ? [] : removed
     }
 
     /// UpdateGroupKey's effect (§11.27.7.4).
     func updateKey(_ group: GroupID, keySet: UInt16, key: [UInt8]?, fabric: FabricIndex, administer: Bool, admin: NodeID?) async throws {
-        guard var state = fabrics[fabric], state.memberships[group] != nil else { throw StatusError(.notFound) }
-        if let key {
-            guard administer else { throw StatusError(.unsupportedAccess) }
-            guard state.keySets[keySet] == nil else { throw StatusError(.alreadyExists) }
-            try await addKeySet(keySet, key: key, fabric: fabric)
-            state = fabrics[fabric] ?? state
-        } else {
-            guard state.keySets[keySet] != nil else { throw StatusError(.notFound) }
-        }
-        state.keyMap.removeAll { $0.group == group }
-        state.keyMap.append((group, keySet))
-        fabrics[fabric] = state
+        guard fabrics[fabric]?.memberships[group] != nil else { throw StatusError(.notFound) }
+        fabrics[fabric] = try await bind(group, to: keySet, key: key, fabric: fabric, administer: administer)
         try await groupcastChanged(by: admin)
     }
 
@@ -89,9 +76,24 @@ extension Groups {
         try await groupcastChanged(by: admin)
     }
 
+    /// Maps a group to a key set: a new one from `key` (Administer only, and never over an existing set), else one the
+    /// fabric has (§11.27.7.1.7 steps 4-6). The fabric's groups after it.
+    private func bind(_ group: GroupID, to keySet: UInt16, key: [UInt8]?, fabric: FabricIndex, administer: Bool) async throws -> FabricGroups {
+        if let key {
+            guard administer else { throw StatusError(.unsupportedAccess) }
+            guard fabrics[fabric]?.keySets[keySet] == nil else { throw StatusError(.alreadyExists) }
+            try await addKeySet(keySet, key: key, fabric: fabric)
+        } else {
+            guard fabrics[fabric]?.keySets[keySet] != nil else { throw StatusError(.notFound) }
+        }
+        var state = fabrics[fabric] ?? FabricGroups()
+        state.keyMap.removeAll { $0.group == group }
+        state.keyMap.append((group, keySet))
+        return state
+    }
+
     /// A key set from a Groupcast key: trust-first, the key as its only epoch key, from time 1 (§11.27.7.1.3).
     private func addKeySet(_ id: UInt16, key: [UInt8], fabric: FabricIndex) async throws {
-        guard key.count == 16 else { throw StatusError(.constraintError) }
         typealias S = GroupKeyManagementCluster.GroupKeySetStruct
         try await writeKeySet(.structure([
             .field(S.groupKeySetId, .unsigned(UInt64(id))),
@@ -113,11 +115,11 @@ extension Groups {
         return .array(fabrics.sorted { $0.key < $1.key }.flatMap { fabric, state in
             state.memberships.sorted { $0.key < $1.key }.flatMap { group, membership -> [TLVElement] in
                 let keySet = state.keyMap.first { $0.group == group }?.keySet ?? 0
-                let endpoints = membership.endpoints.sorted()
-                return stride(from: 0, to: max(endpoints.count, 1), by: 255).map { start in
+                let chunks = membership.endpoints.sorted().chunks(of: Self.endpointsPerMembershipEntry)
+                return (chunks.isEmpty ? [[]] : chunks).map { endpoints in
                     TLVElement(.structure([
                         .field(M.groupId, .unsigned(UInt64(group))),
-                        .field(M.endpoints, .array(endpoints[start..<min(start + 255, endpoints.count)].map { TLVElement(.unsigned(UInt64($0))) })),
+                        .field(M.endpoints, .array(endpoints.map { TLVElement(.unsigned(UInt64($0))) })),
                         .field(M.keySetId, .unsigned(UInt64(keySet))), .field(M.hasAuxiliaryAcl, .bool(membership.auxiliaryACL)),
                         .field(M.mcastAddrPolicy, .unsigned(membership.perGroupAddress
                             ? GroupcastCluster.MulticastAddrPolicyEnum.perGroup : GroupcastCluster.MulticastAddrPolicyEnum.ianaAddr)),
@@ -139,12 +141,9 @@ extension Groups {
     public var auxiliaryEntries: [AccessControlEntry] {
         fabrics.sorted { $0.key < $1.key }.flatMap { fabric, state in
             state.memberships.sorted { $0.key < $1.key }.filter { $0.value.auxiliaryACL }.flatMap { group, membership in
-                let endpoints = membership.endpoints.sorted()
-                return stride(from: 0, to: endpoints.count, by: AccessControlEntry.targetsPerEntry).map { start in
+                membership.endpoints.sorted().chunks(of: AccessControlEntry.targetsPerEntry).map { endpoints in
                     AccessControlEntry(fabricIndex: fabric, privilege: .operate, authMode: .group, subjects: [UInt64(group)],
-                                       targets: endpoints[start..<min(start + AccessControlEntry.targetsPerEntry, endpoints.count)]
-                                           .map { AccessControlEntry.Target(endpoint: $0) },
-                                       auxiliaryType: .groupcast)
+                                       targets: endpoints.map { AccessControlEntry.Target(endpoint: $0) }, auxiliaryType: .groupcast)
                 }
             }
         }
@@ -163,21 +162,25 @@ extension Groups {
     }
 
     /// FabricUnderTest: the fabric testing listening now, else 0 (§11.27.6.5).
-    var fabricUnderTest: FabricIndex {
-        guard let testing, testing.until > .now else { return 0 }
+    nonisolated var fabricUnderTest: FabricIndex {
+        guard let testing = testing.withLockedValue({ $0 }), testing.until > .now else { return 0 }
         return testing.fabric
     }
 
+    /// Whether a fabric tests now: group messages are reported only then.
+    nonisolated var isTesting: Bool { fabricUnderTest != 0 }
+
     /// Starts listener testing for a fabric, or stops any (nil).
-    func test(fabric: FabricIndex?, seconds: Int) {
-        testing = fabric.map { Testing(fabric: $0, until: .now + .seconds(seconds)) }
+    nonisolated func test(fabric: FabricIndex?, seconds: Int) {
+        testing.withLockedValue { $0 = fabric.map { Testing(fabric: $0, until: .now + .seconds(seconds)) } }
     }
 
     /// Calls `reporter` with each GroupcastTesting event's data (its fabric in field 254).
     public func onTestEvent(_ reporter: @escaping @Sendable (TLVValue) async -> Void) { testReporters.append(reporter) }
 
     /// Reports a group message's outcome while its fabric (or, when no key found it, any fabric) is under test.
-    func reportTest(_ result: UInt64, fabric: FabricIndex?, group: GroupID? = nil, path: CommandPath? = nil, allowed: Bool? = nil) async {
+    nonisolated func reportTest(_ result: UInt64, fabric: FabricIndex?, group: GroupID? = nil, path: CommandPath? = nil,
+                                allowed: Bool? = nil) async {
         let tested = fabricUnderTest
         guard tested != 0, fabric == nil || fabric == tested else { return }
         var fields: [TLVElement] = []
@@ -188,6 +191,10 @@ extension Groups {
         }
         if let allowed { fields.append(.field(6, .bool(allowed))) }
         fields += [.field(7, .unsigned(result)), .field(fabricIndexFieldTag, .unsigned(UInt64(tested)))]
-        for reporter in testReporters { await reporter(.structure(fields)) }
+        await report(.structure(fields))
+    }
+
+    private func report(_ event: TLVValue) async {
+        for reporter in testReporters { await reporter(event) }
     }
 }

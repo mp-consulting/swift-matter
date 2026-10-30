@@ -84,6 +84,7 @@ public actor InteractionServer: ProtocolHandler {
               let fields = try? TLVStruct(decoding: message.payload), fields[1]?.bool != true else { return }
         let members = await groups.endpoints(of: group, fabric: fabric)
         let context = AccessContext(session: session, groups: groups)
+        let testing = groups.isTesting
         /// A path's endpoint when it is a member, or every member: an endpoint without the cluster answers
         /// `unsupportedCluster`, which a group ignores like any other status.
         func targets(_ endpoint: EndpointNumber?) -> [EndpointNumber] { endpoint.map { members.contains($0) ? [$0] : [] } ?? members }
@@ -95,13 +96,11 @@ public actor InteractionServer: ProtocolHandler {
                     path.endpoint = endpoint
                     let result = await invoke(path, fields: request.value[1] ?? .structure([]), context: context)
                     // Groupcast testing reports each concrete path the invoke reached (Core §11.27.7.6).
-                    if case .status(let status) = result, [.unsupportedEndpoint, .unsupportedCluster, .unsupportedCommand].contains(status.status) {
-                        continue
-                    }
-                    var allowed = true
-                    if case .status(let status) = result, status.status == .unsupportedAccess { allowed = false }
+                    guard testing else { continue }
+                    let status = if case .status(let status) = result { status.status } else { IMStatus.success }
+                    if [.unsupportedEndpoint, .unsupportedCluster, .unsupportedCommand].contains(status) { continue }
                     await groups.reportTest(GroupcastCluster.GroupcastTestResultEnum.success, fabric: fabric, group: group, path: path,
-                                            allowed: allowed)
+                                            allowed: status != .unsupportedAccess)
                 }
             }
         case .writeRequest:
@@ -431,9 +430,12 @@ public actor InteractionServer: ProtocolHandler {
         guard await cluster.acceptedCommands.contains(path.command), let definition = cluster.definition.command(path.command) else {
             return .status(StatusError(.unsupportedCommand))
         }
-        guard await allowed(context.session, endpoint, path.cluster, definition.invoke) else { return .status(StatusError(.unsupportedAccess)) }
+        let privilege = await privilege(context.session, endpoint, path.cluster)
+        guard privilege?.grants(definition.invoke) ?? false else { return .status(StatusError(.unsupportedAccess)) }
         if definition.fabricScoped, context.fabricIndex == nil { return .status(StatusError(.unsupportedAccess)) }
         if definition.timed, !context.isTimed { return .status(StatusError(.needsTimedInteraction)) }
+        var context = context
+        context.privilege = privilege
         do {
             return try await cluster.invoke(path.command, fields: fields, context: context)
         } catch {

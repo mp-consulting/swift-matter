@@ -46,7 +46,7 @@ enum RootClusters {
                                          attestation: attestation),
             await accessControlCluster(accessControl, groups: groups),
             await groupKeyManagement(groups),
-            await groupcast(groups, accessControl: accessControl, dataModel: dataModel),
+            await groupcast(groups, dataModel: dataModel),
             await networkCommissioning(),
             await generalDiagnostics(startTime: startTime),
             await administratorCommissioning(commissioning),
@@ -261,9 +261,11 @@ enum RootClusters {
         await cluster.provide(A.auxiliaryAcl) { context in
             FabricScopedList.read(.array(await groups.auxiliaryEntries.map { TLVElement($0.tlv) }), context: context)
         }
-        await entries.useAuxiliary { await groups.auxiliaryEntries }
+        // The entries grant as the ACL's do: the ACL keeps a copy, renewed when they change.
+        await entries.setAuxiliary(await groups.auxiliaryEntries)
         // One AuxiliaryAccessUpdated per change, for each fabric whose entries changed (Core §9.10.9.4).
         await groups.onAuxiliaryChange { [weak cluster] admin, fabrics in
+            await entries.setAuxiliary(await groups.auxiliaryEntries)
             guard let cluster else { return }
             await cluster.changed([A.auxiliaryAcl])
             for fabric in fabrics {
@@ -291,7 +293,7 @@ enum RootClusters {
 
     /// Groupcast as a Listener, with per-group addresses too: JoinGroup, LeaveGroup, UpdateGroupKey,
     /// ConfigureAuxiliaryACL and listener testing.
-    static func groupcast(_ groups: Groups, accessControl: AccessControlEntries, dataModel: DataModel) async -> AttributeCluster {
+    static func groupcast(_ groups: Groups, dataModel: DataModel) async -> AttributeCluster {
         typealias A = GroupcastCluster.Attribute
         typealias C = GroupcastCluster.Command
         typealias F = GroupcastCluster.Feature
@@ -302,20 +304,19 @@ enum RootClusters {
         ])
         await cluster.provide(A.membership) { context in FabricScopedList.read(await groups.membershipList, context: context) }
         await cluster.provide(A.usedMcastAddrCount) { _ in .unsigned(UInt64(await groups.usedMulticastAddressCount)) }
-        await cluster.provide(A.fabricUnderTest) { _ in .unsigned(UInt64(await groups.fabricUnderTest)) }
+        await cluster.provide(A.fabricUnderTest) { _ in .unsigned(UInt64(groups.fabricUnderTest)) }
         await groups.onTestEvent { [weak cluster] data in await cluster?.emit(GroupcastCluster.Event.groupcastTesting, data: data) }
 
         /// The invoker's fabric, and whether it holds Administer: keys and the AuxiliaryACL need it.
-        @Sendable func caller(_ context: AccessContext) async throws -> (FabricIndex, Bool) {
+        @Sendable func caller(_ context: AccessContext) throws -> (FabricIndex, Bool) {
             guard let fabric = context.fabricIndex else { throw StatusError(.unsupportedAccess) }
-            let privilege = await accessControl.privilege(of: context.session, endpoint: 0, cluster: GroupcastCluster.id, deviceTypes: [])
-            return (fabric, privilege?.grants(.administer) ?? false)
+            return (fabric, context.privilege?.grants(.administer) ?? false)
         }
         @Sendable func endpoints(_ value: TLVValue?) -> [EndpointNumber]? {
             value?.elements?.compactMap { $0.value.uint.flatMap(EndpointNumber.init(exactly:)) }
         }
         await cluster.handle(C.joinGroup) { _, fields, context in
-            let (fabric, administer) = try await caller(context)
+            let (fabric, administer) = try caller(context)
             guard let group = fields[0]?.uint.flatMap(GroupID.init(exactly:)), let keySet = fields[2]?.uint.flatMap(UInt16.init(exactly:)),
                   let members = endpoints(fields[1])
             else { throw StatusError(.invalidCommand) }
@@ -330,7 +331,7 @@ enum RootClusters {
             return .success
         }
         await cluster.handle(C.leaveGroup) { _, fields, context in
-            let (fabric, _) = try await caller(context)
+            let (fabric, _) = try caller(context)
             guard let group = fields[0]?.uint.flatMap(GroupID.init(exactly:)) else { throw StatusError(.invalidCommand) }
             let removed = try await groups.leave(group, endpoints: endpoints(fields[1]), fabric: fabric, admin: context.session.peerNodeID)
             return .response(C.leaveGroupResponse, .structure([
@@ -338,7 +339,7 @@ enum RootClusters {
             ]))
         }
         await cluster.handle(C.updateGroupKey) { _, fields, context in
-            let (fabric, administer) = try await caller(context)
+            let (fabric, administer) = try caller(context)
             guard let group = fields[0]?.uint.flatMap(GroupID.init(exactly:)), let keySet = fields[1]?.uint.flatMap(UInt16.init(exactly:)),
                   group != 0, keySet != 0
             else { throw StatusError(.constraintError) }
@@ -347,21 +348,21 @@ enum RootClusters {
             return .success
         }
         await cluster.handle(C.configureAuxiliaryAcl) { _, fields, context in
-            let (fabric, _) = try await caller(context)
+            let (fabric, _) = try caller(context)
             guard let group = fields[0]?.uint.flatMap(GroupID.init(exactly:)), let use = fields[1]?.bool else { throw StatusError(.invalidCommand) }
             try await groups.configureAuxiliaryACL(group, use: use, fabric: fabric, admin: context.session.peerNodeID)
             return .success
         }
         await cluster.handle(C.groupcastTesting) { cluster, fields, context in
-            let (fabric, _) = try await caller(context)
+            let (fabric, _) = try caller(context)
             typealias T = GroupcastCluster.GroupcastTestingEnum
             switch fields[0]?.uint {
             case T.disableTesting?:
-                await groups.test(fabric: nil, seconds: 0)
+                groups.test(fabric: nil, seconds: 0)
             case T.enableListenerTesting?:
                 let seconds = fields[1]?.uint ?? 60
                 guard (10...1200).contains(seconds) else { throw StatusError(.constraintError) }
-                await groups.test(fabric: fabric, seconds: Int(seconds))
+                groups.test(fabric: fabric, seconds: Int(seconds))
             default:
                 // Sender testing needs the Sender feature, which this node does not have.
                 throw StatusError(.constraintError)

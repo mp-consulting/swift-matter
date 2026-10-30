@@ -227,10 +227,8 @@ public actor DataModel {
     private nonisolated var changeReporter: ChangeReporter {
         ChangeReporter(report: { [weak self] endpoint, cluster, attributes in
             self?.publish(.attributes(endpoint, cluster, attributes))
-        }, emit: { [weak self] endpoint, cluster, event, priority, data in
-            // A fabric-sensitive event's data carries its fabric (Core §7.19.2.40): only that fabric reads it.
-            await self?.emit(endpoint: endpoint, cluster: cluster, event: event, priority: priority, data: data,
-                             fabricIndex: data[fabricIndexFieldTag]?.uint.flatMap(FabricIndex.init(exactly:)))
+        }, emit: { [weak self] endpoint, cluster, event, priority, data, fabric in
+            await self?.emit(endpoint: endpoint, cluster: cluster, event: event, priority: priority, data: data, fabricIndex: fabric)
         })
     }
 }
