@@ -94,11 +94,12 @@ async def main():
 
     # Without its session, the controller resumes the last one with the ticket Sigma2 gave it (Sigma1 with resumption).
     controller.ExpireSessions(NODE)
+    label = "read after resuming the CASE session"
     try:
         resumed = await asyncio.wait_for(controller.ReadAttribute(NODE, [(0, Clusters.BasicInformation.Attributes.VendorName)]), timeout=20)
-        check("read after resuming the CASE session", resumed[0][Clusters.BasicInformation][Clusters.BasicInformation.Attributes.VendorName] == "swift-matter")
+        check(label, resumed[0][Clusters.BasicInformation][Clusters.BasicInformation.Attributes.VendorName] == "swift-matter")
     except Exception as error:  # noqa: BLE001
-        check("read after resuming the CASE session", False, repr(error))
+        check(label, False, repr(error))
 
     controller.Shutdown()
     stack.Shutdown()

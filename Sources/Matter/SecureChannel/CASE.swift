@@ -214,8 +214,7 @@ public enum CASE {
                 .open(mic, nonce: resume1Nonce)) != nil {
                 try await resume(exchange, ticket: ticket, initiatorRandom: initiatorRandom, initiatorSessionID: initiatorSessionID,
                                  peerParameters: SessionParameters(tlv: fields[5]), resumptions: resumptions)
-                let node = zeroPadded(ticket.peerNodeID, width: 16, radix: 16)
-                logger.debug("CASE with \(exchange.initialSession.peerAddress): resumed node \(node)'s session on fabric \(ticket.fabricIndex ?? 0)")
+                logger.debug("CASE with \(exchange.initialSession.peerAddress): resumed \(describe(ticket.peerNodeID, ticket.fabricIndex ?? 0))")
                 return
             } else {
                 logger.debug("CASE with \(exchange.initialSession.peerAddress): its ticket is unknown, used or fails its MIC, establishing a new session")
@@ -261,8 +260,12 @@ public enum CASE {
                                      peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
         await resumptions.put(ResumptionTicket(id: resumptionID, sharedSecret: shared, session: info))
         try await exchange.sendStatus(.sessionEstablished)
-        let node = zeroPadded(info.peerNodeID, width: 16, radix: 16)
-        logger.debug("CASE with \(exchange.initialSession.peerAddress): node \(node) on fabric \(fabric.index)")
+        logger.debug("CASE with \(exchange.initialSession.peerAddress): new session with \(describe(info.peerNodeID, fabric.index))")
+    }
+
+    /// A peer as the CASE logs name it; called inside their messages, so only when debug logging is on.
+    private static func describe(_ node: NodeID, _ fabric: FabricIndex) -> String {
+        "node \(zeroPadded(node, width: 16, radix: 16)) on fabric \(fabric)"
     }
 
     /// Answers a valid resumption with Sigma2_Resume and installs the resumed session once the initiator confirms it.
