@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "Matter", targets: ["Matter"]),
+        .executable(name: "matter-bridge-demo", targets: ["MatterBridgeDemo"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
@@ -27,6 +28,10 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
-        .testTarget(name: "MatterTests", dependencies: ["Matter"]),
+        .executableTarget(
+            name: "MatterBridgeDemo",
+            dependencies: ["Matter", .product(name: "Logging", package: "swift-log")]
+        ),
+        .testTarget(name: "MatterTests", dependencies: ["Matter", .product(name: "NIOCore", package: "swift-nio")]),
     ]
 )

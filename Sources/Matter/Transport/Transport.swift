@@ -94,6 +94,15 @@ public final class UDPTransport: MatterTransport {
         inbox.withLockedValue { value in value?.close(); value = nil }
     }
 
+    /// An IPv4 peer as itself, not as the IPv4-mapped IPv6 address a dual-stack socket reports, so replies match the
+    /// address an exchange was started with.
+    static func unmapped(_ address: SocketAddress) -> SocketAddress {
+        guard address.protocol == .inet6, let ip = address.ipAddress, ip.lowercased().hasPrefix("::ffff:"), ip.contains("."),
+              let port = address.port, let v4 = try? SocketAddress(ipAddress: String(ip.dropFirst(7)), port: port)
+        else { return address }
+        return v4
+    }
+
     static func mapped(_ address: SocketAddress) throws -> SocketAddress {
         guard let ip = address.ipAddress, let port = address.port else { return address }
         return try SocketAddress(ipAddress: "::ffff:" + ip, port: port)
@@ -107,7 +116,7 @@ public final class UDPTransport: MatterTransport {
 
         func channelRead(context: ChannelHandlerContext, data: NIOAny) {
             let envelope = unwrapInboundIn(data)
-            inbox.post(Array(envelope.data.readableBytesView), from: .socket(envelope.remoteAddress))
+            inbox.post(Array(envelope.data.readableBytesView), from: .socket(UDPTransport.unmapped(envelope.remoteAddress)))
         }
     }
 }
