@@ -3,7 +3,7 @@
 The Matter protocol (device side, over IP) in Swift: a Matter node that a commissioner (Apple Home, Google Home,
 Alexa, SmartThings, Home Assistant, chip-tool) can commission and control, and a bridge API that exposes other devices
 as bridged Matter endpoints. Written against the Matter 1.6.1 specifications (Core `23-27349-012`, Application
-Clusters `23-27350-011`, Device Library `23-27351-011`). macOS 14+ and Linux. Library `Matter`; the demo bridge is
+Clusters `23-27350-011`, Device Library `23-27351-011`; docs/specifications.md, the PDFs in the ignored `specs/`). macOS 14+ and Linux. Library `Matter`; the demo bridge is
 `matter-bridge-demo`.
 
 ## Layout
@@ -36,6 +36,9 @@ Clusters `23-27350-011`, Device Library `23-27351-011`). macOS 14+ and Linux. Li
 | `Sources/MatterBench` | `matter-bench` (`bin/dev bench`): a bridge node and a controller over UDP loopback, timing commissioning, sessions, reads, invokes and reports, and memory; results in `Benchmarks.md` |
 | `Tests/MatterTests` | Swift Testing suites; vectors from the specification, the SPAKE2+ draft, RFC 3610/7914 and matter.js's tests; end-to-end commissioning on a memory network and over UDP |
 | `bin/dev` | Development commands (`bin/dev help`) |
+| `docs/specifications.md` | The Matter specifications cited in the code, where to download them; never commit them (CSA members only may reproduce them) |
+| `CONTRIBUTING.md`, `.github/` | How to contribute and release, the pull request template and checklist, issue forms, `CODEOWNERS`, Dependabot |
+| `CHANGELOG.md` | Keep a Changelog; user-visible changes go under `[Unreleased]` |
 
 ## Commands
 
@@ -75,3 +78,9 @@ bin/dev generate ~/src/matter.js   # regenerate Definitions.swift after a matter
 - Tests wait for what they check (`eventually`), never a fixed sleep; MRP and subscriptions take a time scale
   (`ReliabilityParameters.timeScale`, `InteractionServer.setTimeScale`).
 - Endpoint numbers of bridged devices are persisted by device id and never reused (Core §9.2.10).
+
+## Releases
+
+A release is a tag with the bare version (`0.5.0`, no `v`): SwiftPM resolves versions from tags. Move the
+`[Unreleased]` section of CHANGELOG.md under the new version with its compare link, commit, push the tag, then
+`gh release create X.Y.Z --title X.Y.Z --notes-file <section>`.

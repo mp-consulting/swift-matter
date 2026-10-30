@@ -1,0 +1,22 @@
+name: Feature request
+description: A device type, a cluster or a part of the specification swift-matter does not support yet.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you need
+      description: The device type, cluster or feature, and what you would build with it.
+    validations:
+      required: true
+  - type: input
+    id: spec
+    attributes:
+      label: Specification
+      description: Where the specification defines it, if you know.
+      placeholder: "Application Clusters §1.6, Device Library §4.3"
+  - type: textarea
+    id: commissioners
+    attributes:
+      label: Commissioners
+      description: Which ecosystems support it today, as far as you know.

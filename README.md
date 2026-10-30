@@ -37,6 +37,12 @@ await lamp.update(.on(true))   // the lamp changed on its own
 `bin/dev demo` runs a bridge of virtual devices, `bin/dev bench` measures one ([Benchmarks.md](Benchmarks.md)); see [CLAUDE.md](CLAUDE.md) for the layout and `bin/dev help` for the
 development commands.
 
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and propose a change, and
+[docs/specifications.md](docs/specifications.md) where to get the Matter specifications the code cites. Changes are
+listed in [CHANGELOG.md](CHANGELOG.md); report vulnerabilities privately ([SECURITY.md](SECURITY.md)).
+
 ## Interoperability
 
 `bin/dev interop-python` (and CI, on every change) runs the demo, commissions it with connectedhomeip's own

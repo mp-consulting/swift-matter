@@ -1,0 +1,23 @@
+# Keeps the Swift packages and the workflows' actions current. Minor and patch updates come grouped, one pull request
+# per ecosystem a week; security updates come at once, on their own.
+version: 2
+updates:
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      swift:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        update-types: [minor, patch]

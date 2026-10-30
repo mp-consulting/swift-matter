@@ -10,7 +10,7 @@ jobs:
   macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build and test
         run: swift test
       - name: Lint
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:6.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build and test
         run: swift test
       - name: Lint
@@ -31,8 +31,8 @@ jobs:
     # controller's wheels find the demo over the system's DNS-SD there, without an Avahi daemon to run.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       - name: Commission the demo with connectedhomeip's controller
         timeout-minutes: 20
         run: bin/dev interop-python
