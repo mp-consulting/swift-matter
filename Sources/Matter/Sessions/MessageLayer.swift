@@ -294,6 +294,7 @@ public actor MessageLayer {
             }
             guard exchanges[key]?.retransmission?.counter == counter else { return }
             if attempt == reliability.maxTransmissions - 1 { break }
+            logger.trace("Retransmitting message \(counter) on exchange \(key.exchangeID) to \(peer)")
             try? await transport.send(frame, to: peer)
         }
         guard exchanges[key]?.retransmission?.counter == counter else { return }
@@ -448,8 +449,10 @@ public actor MessageLayer {
             case .unsecured(let unsecuredKey): unsecuredInfo(unsecuredKey.peer)
             case .group: preconditionFailure("group messages are dispatched by receiveGroup")
             }
+            // The exchange first: noting the message records its acknowledgement on the exchange's state.
+            let exchange = makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID)
             noteReceived(message, key: key)
-            start(handler, on: makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID), first: message)
+            start(handler, on: exchange, first: message)
             return
         }
 
