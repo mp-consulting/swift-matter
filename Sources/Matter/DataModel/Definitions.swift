@@ -389,11 +389,57 @@ public enum ActionsCluster {
 public enum ActivatedCarbonFilterMonitoringCluster {
     public static let id: ClusterID = 0x0072
     public static let revision: UInt16 = 1
+    public enum Attribute {
+        public static let condition: AttributeID = 0x0000
+        public static let degradationDirection: AttributeID = 0x0001
+        public static let changeIndication: AttributeID = 0x0002
+        public static let inPlaceIndicator: AttributeID = 0x0003
+        public static let lastChangedTime: AttributeID = 0x0004
+        public static let replacementProductList: AttributeID = 0x0005
+    }
+    public enum Command {
+        public static let resetCondition: CommandID = 0x00
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let condition = Feature(rawValue: 1 << 0)
+        public static let warning = Feature(rawValue: 1 << 1)
+        public static let replacementProductList = Feature(rawValue: 1 << 2)
+    }
+    public enum DegradationDirectionEnum {
+        public static let up: UInt64 = 0
+        public static let down: UInt64 = 1
+    }
+    public enum ChangeIndicationEnum {
+        public static let ok: UInt64 = 0
+        public static let warning: UInt64 = 1
+        public static let critical: UInt64 = 2
+    }
+    public enum ProductIdentifierTypeEnum {
+        public static let upc: UInt64 = 0
+        public static let gtin8: UInt64 = 1
+        public static let ean: UInt64 = 2
+        public static let gtin14: UInt64 = 3
+        public static let oem: UInt64 = 4
+    }
+    /// The field tags of ReplacementProductStruct.
+    public enum ReplacementProductStruct {
+        public static let productIdentifierType: UInt8 = 0
+        public static let productIdentifierValue: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0072, name: "ActivatedCarbonFilterMonitoring", revision: 1,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "Condition", type: "percent", read: .view, flags: []),
+            AttributeDefinition(id: 0x0001, name: "DegradationDirection", type: "DegradationDirectionEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "ChangeIndication", type: "ChangeIndicationEnum", read: .view, flags: []),
+            AttributeDefinition(id: 0x0003, name: "InPlaceIndicator", type: "bool", read: .view, flags: []),
+            AttributeDefinition(id: 0x0004, name: "LastChangedTime", type: "epoch-s", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0005, name: "ReplacementProductList", type: "list", read: .view, flags: [.list, .fixed]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ResetCondition", invoke: .operate, timed: false, fabricScoped: false, response: nil),
         ],
         events: [
         ]
@@ -979,33 +1025,78 @@ public enum BridgedDeviceBasicInformationCluster {
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let bridgedIcdSupport = Feature(rawValue: 1 << 20)
     }
+    public enum ProductFinishEnum {
+        public static let other: UInt64 = 0
+        public static let matte: UInt64 = 1
+        public static let satin: UInt64 = 2
+        public static let polished: UInt64 = 3
+        public static let rugged: UInt64 = 4
+        public static let fabric: UInt64 = 5
+    }
+    public enum ColorEnum {
+        public static let black: UInt64 = 0
+        public static let navy: UInt64 = 1
+        public static let green: UInt64 = 2
+        public static let teal: UInt64 = 3
+        public static let maroon: UInt64 = 4
+        public static let purple: UInt64 = 5
+        public static let olive: UInt64 = 6
+        public static let gray: UInt64 = 7
+        public static let blue: UInt64 = 8
+        public static let lime: UInt64 = 9
+        public static let aqua: UInt64 = 10
+        public static let red: UInt64 = 11
+        public static let fuchsia: UInt64 = 12
+        public static let yellow: UInt64 = 13
+        public static let white: UInt64 = 14
+        public static let nickel: UInt64 = 15
+        public static let chrome: UInt64 = 16
+        public static let brass: UInt64 = 17
+        public static let copper: UInt64 = 18
+        public static let silver: UInt64 = 19
+        public static let gold: UInt64 = 20
+    }
+    /// The field tags of ProductAppearanceStruct.
+    public enum ProductAppearanceStruct {
+        public static let finish: UInt8 = 0
+        public static let primaryColor: UInt8 = 1
+    }
+    /// The field tags of CapabilityMinimaStruct.
+    public enum CapabilityMinimaStruct {
+        public static let caseSessionsPerFabric: UInt8 = 0
+        public static let subscriptionsPerFabric: UInt8 = 1
+        public static let simultaneousInvocationsSupported: UInt8 = 2
+        public static let simultaneousWritesSupported: UInt8 = 3
+        public static let readPathsSupported: UInt8 = 4
+        public static let subscribePathsSupported: UInt8 = 5
+    }
     public static let definition = ClusterDefinition(
         id: 0x0039, name: "BridgedDeviceBasicInformation", revision: 6,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "DataModelRevision", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "VendorName", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "VendorId", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "ProductName", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0004, name: "ProductId", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0005, name: "NodeLabel", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0006, name: "Location", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0007, name: "HardwareVersion", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0008, name: "HardwareVersionString", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0009, name: "SoftwareVersion", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x000A, name: "SoftwareVersionString", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x000B, name: "ManufacturingDate", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x000C, name: "PartNumber", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x000D, name: "ProductUrl", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x000E, name: "ProductLabel", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x000F, name: "SerialNumber", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0010, name: "LocalConfigDisabled", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0011, name: "Reachable", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0012, name: "UniqueId", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0013, name: "CapabilityMinima", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0014, name: "ProductAppearance", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0015, name: "SpecificationVersion", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0016, name: "MaxPathsPerInvoke", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0018, name: "ConfigurationVersion", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "DataModelRevision", type: "uint16", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0001, name: "VendorName", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "VendorId", type: "vendor-id", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0003, name: "ProductName", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0004, name: "ProductId", type: "uint16", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0005, name: "NodeLabel", type: "string", read: .view, write: .manage, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0006, name: "Location", type: "string", read: .view, write: .administer, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0007, name: "HardwareVersion", type: "uint16", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "HardwareVersionString", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "SoftwareVersion", type: "uint32", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "SoftwareVersionString", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000B, name: "ManufacturingDate", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000C, name: "PartNumber", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000D, name: "ProductUrl", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000E, name: "ProductLabel", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000F, name: "SerialNumber", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0010, name: "LocalConfigDisabled", type: "bool", read: .view, write: .manage, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0011, name: "Reachable", type: "bool", read: .view, flags: []),
+            AttributeDefinition(id: 0x0012, name: "UniqueId", type: "string", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0013, name: "CapabilityMinima", type: "CapabilityMinimaStruct", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0014, name: "ProductAppearance", type: "ProductAppearanceStruct", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0015, name: "SpecificationVersion", type: "uint32", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0016, name: "MaxPathsPerInvoke", type: "uint16", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0018, name: "ConfigurationVersion", type: "uint32", read: .view, flags: [.nonVolatile]),
         ],
         commands: [
             CommandDefinition(id: 0x80, name: "KeepActive", invoke: .operate, timed: false, fabricScoped: false, response: nil),
@@ -1350,13 +1441,69 @@ public enum CameraAvStreamManagementCluster {
     )
 }
 
-/// CarbonDioxideConcentrationMeasurement (0x040D), revision 1.
+/// CarbonDioxideConcentrationMeasurement (0x040D), revision 5.
 public enum CarbonDioxideConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x040D
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x040D, name: "CarbonDioxideConcentrationMeasurement", revision: 1,
+        id: 0x040D, name: "CarbonDioxideConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -1365,13 +1512,69 @@ public enum CarbonDioxideConcentrationMeasurementCluster {
     )
 }
 
-/// CarbonMonoxideConcentrationMeasurement (0x040C), revision 1.
+/// CarbonMonoxideConcentrationMeasurement (0x040C), revision 5.
 public enum CarbonMonoxideConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x040C
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x040C, name: "CarbonMonoxideConcentrationMeasurement", revision: 1,
+        id: 0x040C, name: "CarbonMonoxideConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -2796,10 +2999,20 @@ public enum DeviceEnergyManagementModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -2817,15 +3030,27 @@ public enum DeviceEnergyManagementModeCluster {
         public static let localOptimization: UInt64 = 16386
         public static let gridOptimization: UInt64 = 16387
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x009F, name: "DeviceEnergyManagementMode", revision: 2,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -2872,13 +3097,38 @@ public enum DiagnosticLogsCluster {
 public enum DishwasherAlarmCluster {
     public static let id: ClusterID = 0x005D
     public static let revision: UInt16 = 1
+    public enum Attribute {
+        public static let mask: AttributeID = 0x0000
+        public static let latch: AttributeID = 0x0001
+        public static let state: AttributeID = 0x0002
+        public static let supported: AttributeID = 0x0003
+    }
+    public enum Command {
+        public static let reset: CommandID = 0x00
+        public static let modifyEnabledAlarms: CommandID = 0x01
+    }
+    public enum Event {
+        public static let notify: EventID = 0x00
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let reset = Feature(rawValue: 1 << 0)
+    }
     public static let definition = ClusterDefinition(
         id: 0x005D, name: "DishwasherAlarm", revision: 1,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "Mask", type: "AlarmBitmap", read: .view, flags: []),
+            AttributeDefinition(id: 0x0001, name: "Latch", type: "AlarmBitmap", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "State", type: "AlarmBitmap", read: .view, flags: []),
+            AttributeDefinition(id: 0x0003, name: "Supported", type: "AlarmBitmap", read: .view, flags: [.fixed]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "Reset", invoke: .operate, timed: false, fabricScoped: false, response: nil),
+            CommandDefinition(id: 0x01, name: "ModifyEnabledAlarms", invoke: .operate, timed: false, fabricScoped: false, response: nil),
         ],
         events: [
+            EventDefinition(id: 0x00, name: "Notify", priority: .info, read: .view, fabricSensitive: false),
         ]
     )
 }
@@ -2893,10 +3143,20 @@ public enum DishwasherModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -2913,15 +3173,27 @@ public enum DishwasherModeCluster {
         public static let heavy: UInt64 = 16385
         public static let light: UInt64 = 16386
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0059, name: "DishwasherMode", revision: 3,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -3716,10 +3988,20 @@ public enum EnergyEvseModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -3737,15 +4019,27 @@ public enum EnergyEvseModeCluster {
         public static let solarCharging: UInt64 = 16386
         public static let v2X: UInt64 = 16387
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x009D, name: "EnergyEvseMode", revision: 2,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -3940,6 +4234,11 @@ public enum FixedLabelCluster {
     public enum Attribute {
         public static let labelList: AttributeID = 0x0000
     }
+    /// The field tags of LabelStruct.
+    public enum LabelStruct {
+        public static let label: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0040, name: "FixedLabel", revision: 1,
         attributes: [
@@ -3977,13 +4276,69 @@ public enum FlowMeasurementCluster {
     )
 }
 
-/// FormaldehydeConcentrationMeasurement (0x042B), revision 1.
+/// FormaldehydeConcentrationMeasurement (0x042B), revision 5.
 public enum FormaldehydeConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x042B
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x042B, name: "FormaldehydeConcentrationMeasurement", revision: 1,
+        id: 0x042B, name: "FormaldehydeConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -4414,11 +4769,57 @@ public enum GroupsCluster {
 public enum HepaFilterMonitoringCluster {
     public static let id: ClusterID = 0x0071
     public static let revision: UInt16 = 1
+    public enum Attribute {
+        public static let condition: AttributeID = 0x0000
+        public static let degradationDirection: AttributeID = 0x0001
+        public static let changeIndication: AttributeID = 0x0002
+        public static let inPlaceIndicator: AttributeID = 0x0003
+        public static let lastChangedTime: AttributeID = 0x0004
+        public static let replacementProductList: AttributeID = 0x0005
+    }
+    public enum Command {
+        public static let resetCondition: CommandID = 0x00
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let condition = Feature(rawValue: 1 << 0)
+        public static let warning = Feature(rawValue: 1 << 1)
+        public static let replacementProductList = Feature(rawValue: 1 << 2)
+    }
+    public enum DegradationDirectionEnum {
+        public static let up: UInt64 = 0
+        public static let down: UInt64 = 1
+    }
+    public enum ChangeIndicationEnum {
+        public static let ok: UInt64 = 0
+        public static let warning: UInt64 = 1
+        public static let critical: UInt64 = 2
+    }
+    public enum ProductIdentifierTypeEnum {
+        public static let upc: UInt64 = 0
+        public static let gtin8: UInt64 = 1
+        public static let ean: UInt64 = 2
+        public static let gtin14: UInt64 = 3
+        public static let oem: UInt64 = 4
+    }
+    /// The field tags of ReplacementProductStruct.
+    public enum ReplacementProductStruct {
+        public static let productIdentifierType: UInt8 = 0
+        public static let productIdentifierValue: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0071, name: "HepaFilterMonitoring", revision: 1,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "Condition", type: "percent", read: .view, flags: []),
+            AttributeDefinition(id: 0x0001, name: "DegradationDirection", type: "DegradationDirectionEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "ChangeIndication", type: "ChangeIndicationEnum", read: .view, flags: []),
+            AttributeDefinition(id: 0x0003, name: "InPlaceIndicator", type: "bool", read: .view, flags: []),
+            AttributeDefinition(id: 0x0004, name: "LastChangedTime", type: "epoch-s", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0005, name: "ReplacementProductList", type: "list", read: .view, flags: [.list, .fixed]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ResetCondition", invoke: .operate, timed: false, fabricScoped: false, response: nil),
         ],
         events: [
         ]
@@ -5025,10 +5426,20 @@ public enum LaundryWasherModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -5046,15 +5457,27 @@ public enum LaundryWasherModeCluster {
         public static let heavy: UInt64 = 16386
         public static let whites: UInt64 = 16387
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0051, name: "LaundryWasherMode", revision: 3,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -5547,6 +5970,12 @@ public enum MicrowaveOvenModeCluster {
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
     }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
+    }
     public enum ModeTag {
         public static let auto: UInt64 = 0
         public static let quick: UInt64 = 1
@@ -5561,17 +5990,27 @@ public enum MicrowaveOvenModeCluster {
         public static let normal: UInt64 = 16384
         public static let defrost: UInt64 = 16385
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x005E, name: "MicrowaveOvenMode", revision: 2,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
-            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x01, name: "ChangeToModeResponse", invoke: .operate, timed: false, fabricScoped: false, response: nil),
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -5738,13 +6177,69 @@ public enum NetworkCommissioningCluster {
     )
 }
 
-/// NitrogenDioxideConcentrationMeasurement (0x0413), revision 1.
+/// NitrogenDioxideConcentrationMeasurement (0x0413), revision 5.
 public enum NitrogenDioxideConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x0413
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x0413, name: "NitrogenDioxideConcentrationMeasurement", revision: 1,
+        id: 0x0413, name: "NitrogenDioxideConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -6162,6 +6657,14 @@ public enum OtaSoftwareUpdateRequestorCluster {
 public enum OvenCavityOperationalStateCluster {
     public static let id: ClusterID = 0x0048
     public static let revision: UInt16 = 2
+    public enum Attribute {
+        public static let phaseList: AttributeID = 0x0000
+        public static let currentPhase: AttributeID = 0x0001
+        public static let countdownTime: AttributeID = 0x0002
+        public static let operationalStateList: AttributeID = 0x0003
+        public static let operationalState: AttributeID = 0x0004
+        public static let operationalError: AttributeID = 0x0005
+    }
     public enum Command {
         public static let pause: CommandID = 0x00
         public static let stop: CommandID = 0x01
@@ -6169,18 +6672,52 @@ public enum OvenCavityOperationalStateCluster {
         public static let resume: CommandID = 0x03
         public static let operationalCommandResponse: CommandID = 0x04
     }
+    public enum Event {
+        public static let operationalError: EventID = 0x00
+        public static let operationCompletion: EventID = 0x01
+    }
+    public enum OperationalStateEnum {
+        public static let stopped: UInt64 = 0
+        public static let running: UInt64 = 1
+        public static let paused: UInt64 = 2
+        public static let error: UInt64 = 3
+    }
+    public enum ErrorStateEnum {
+        public static let noError: UInt64 = 0
+        public static let unableToStartOrResume: UInt64 = 1
+        public static let unableToCompleteOperation: UInt64 = 2
+        public static let commandInvalidInState: UInt64 = 3
+    }
+    /// The field tags of OperationalStateStruct.
+    public enum OperationalStateStruct {
+        public static let operationalStateId: UInt8 = 0
+        public static let operationalStateLabel: UInt8 = 1
+    }
+    /// The field tags of ErrorStateStruct.
+    public enum ErrorStateStruct {
+        public static let errorStateId: UInt8 = 0
+        public static let errorStateLabel: UInt8 = 1
+        public static let errorStateDetails: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0048, name: "OvenCavityOperationalState", revision: 2,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "PhaseList", type: "list", read: .view, flags: [.list, .nullable]),
+            AttributeDefinition(id: 0x0001, name: "CurrentPhase", type: "uint8", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0002, name: "CountdownTime", type: "elapsed-s", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0003, name: "OperationalStateList", type: "list", read: .view, flags: [.list]),
+            AttributeDefinition(id: 0x0004, name: "OperationalState", type: "OperationalStateEnum", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "OperationalError", type: "ErrorStateStruct", read: .view, flags: []),
         ],
         commands: [
-            CommandDefinition(id: 0x00, name: "Pause", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x01, name: "Stop", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x02, name: "Start", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x03, name: "Resume", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x04, name: "OperationalCommandResponse", invoke: .operate, timed: false, fabricScoped: false, response: nil),
+            CommandDefinition(id: 0x00, name: "Pause", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x01, name: "Stop", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x02, name: "Start", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x03, name: "Resume", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
         ],
         events: [
+            EventDefinition(id: 0x00, name: "OperationalError", priority: .critical, read: .view, fabricSensitive: false),
+            EventDefinition(id: 0x01, name: "OperationCompletion", priority: .info, read: .view, fabricSensitive: false),
         ]
     )
 }
@@ -6195,10 +6732,20 @@ public enum OvenModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -6225,28 +6772,96 @@ public enum OvenModeCluster {
         public static let airSousVide: UInt64 = 16395
         public static let frozenFood: UInt64 = 16396
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0049, name: "OvenMode", revision: 2,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
     )
 }
 
-/// OzoneConcentrationMeasurement (0x0415), revision 1.
+/// OzoneConcentrationMeasurement (0x0415), revision 5.
 public enum OzoneConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x0415
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x0415, name: "OzoneConcentrationMeasurement", revision: 1,
+        id: 0x0415, name: "OzoneConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -6255,13 +6870,69 @@ public enum OzoneConcentrationMeasurementCluster {
     )
 }
 
-/// Pm1ConcentrationMeasurement (0x042C), revision 1.
+/// Pm1ConcentrationMeasurement (0x042C), revision 5.
 public enum Pm1ConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x042C
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x042C, name: "Pm1ConcentrationMeasurement", revision: 1,
+        id: 0x042C, name: "Pm1ConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -6270,13 +6941,69 @@ public enum Pm1ConcentrationMeasurementCluster {
     )
 }
 
-/// Pm10ConcentrationMeasurement (0x042D), revision 1.
+/// Pm10ConcentrationMeasurement (0x042D), revision 5.
 public enum Pm10ConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x042D
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x042D, name: "Pm10ConcentrationMeasurement", revision: 1,
+        id: 0x042D, name: "Pm10ConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -6285,13 +7012,69 @@ public enum Pm10ConcentrationMeasurementCluster {
     )
 }
 
-/// Pm25ConcentrationMeasurement (0x042A), revision 1.
+/// Pm25ConcentrationMeasurement (0x042A), revision 5.
 public enum Pm25ConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x042A
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x042A, name: "Pm25ConcentrationMeasurement", revision: 1,
+        id: 0x042A, name: "Pm25ConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -6938,13 +7721,69 @@ public enum PushAvStreamTransportCluster {
     )
 }
 
-/// RadonConcentrationMeasurement (0x042F), revision 1.
+/// RadonConcentrationMeasurement (0x042F), revision 5.
 public enum RadonConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x042F
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x042F, name: "RadonConcentrationMeasurement", revision: 1,
+        id: 0x042F, name: "RadonConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -6957,8 +7796,18 @@ public enum RadonConcentrationMeasurementCluster {
 public enum RefrigeratorAlarmCluster {
     public static let id: ClusterID = 0x0057
     public static let revision: UInt16 = 1
+    public enum Attribute {
+        public static let mask: AttributeID = 0x0000
+        public static let latch: AttributeID = 0x0001
+        public static let state: AttributeID = 0x0002
+        public static let supported: AttributeID = 0x0003
+    }
     public enum Command {
+        public static let reset: CommandID = 0x00
         public static let modifyEnabledAlarms: CommandID = 0x01
+    }
+    public enum Event {
+        public static let notify: EventID = 0x00
     }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
@@ -6968,11 +7817,17 @@ public enum RefrigeratorAlarmCluster {
     public static let definition = ClusterDefinition(
         id: 0x0057, name: "RefrigeratorAlarm", revision: 1,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "Mask", type: "AlarmBitmap", read: .view, flags: []),
+            AttributeDefinition(id: 0x0001, name: "Latch", type: "AlarmBitmap", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "State", type: "AlarmBitmap", read: .view, flags: []),
+            AttributeDefinition(id: 0x0003, name: "Supported", type: "AlarmBitmap", read: .view, flags: [.fixed]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "Reset", invoke: .operate, timed: false, fabricScoped: false, response: nil),
             CommandDefinition(id: 0x01, name: "ModifyEnabledAlarms", invoke: .operate, timed: false, fabricScoped: false, response: nil),
         ],
         events: [
+            EventDefinition(id: 0x00, name: "Notify", priority: .info, read: .view, fabricSensitive: false),
         ]
     )
 }
@@ -6987,10 +7842,20 @@ public enum RefrigeratorAndTemperatureControlledCabinetModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -7006,15 +7871,27 @@ public enum RefrigeratorAndTemperatureControlledCabinetModeCluster {
         public static let rapidCool: UInt64 = 16384
         public static let rapidFreeze: UInt64 = 16385
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0052, name: "RefrigeratorAndTemperatureControlledCabinetMode", revision: 3,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -7056,6 +7933,10 @@ public enum RvcCleanModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
@@ -7063,6 +7944,10 @@ public enum RvcCleanModeCluster {
         public static let directModeChange = Feature(rawValue: 1 << 20)
     }
     public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
         public static let cleaningInProgress: UInt64 = 64
     }
     public enum ModeTag {
@@ -7081,15 +7966,27 @@ public enum RvcCleanModeCluster {
         public static let mop: UInt64 = 16386
         public static let vacuumThenMop: UInt64 = 16387
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0055, name: "RvcCleanMode", revision: 5,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -7100,6 +7997,14 @@ public enum RvcCleanModeCluster {
 public enum RvcOperationalStateCluster {
     public static let id: ClusterID = 0x0061
     public static let revision: UInt16 = 3
+    public enum Attribute {
+        public static let phaseList: AttributeID = 0x0000
+        public static let currentPhase: AttributeID = 0x0001
+        public static let countdownTime: AttributeID = 0x0002
+        public static let operationalStateList: AttributeID = 0x0003
+        public static let operationalState: AttributeID = 0x0004
+        public static let operationalError: AttributeID = 0x0005
+    }
     public enum Command {
         public static let pause: CommandID = 0x00
         public static let stop: CommandID = 0x01
@@ -7107,6 +8012,10 @@ public enum RvcOperationalStateCluster {
         public static let resume: CommandID = 0x03
         public static let operationalCommandResponse: CommandID = 0x04
         public static let goHome: CommandID = 0x80
+    }
+    public enum Event {
+        public static let operationalError: EventID = 0x00
+        public static let operationCompletion: EventID = 0x01
     }
     public enum OperationalStateEnum {
         public static let stopped: UInt64 = 0
@@ -7142,19 +8051,37 @@ public enum RvcOperationalStateCluster {
         public static let brushJammed: UInt64 = 77
         public static let navigationSensorObscured: UInt64 = 78
     }
+    /// The field tags of OperationalStateStruct.
+    public enum OperationalStateStruct {
+        public static let operationalStateId: UInt8 = 0
+        public static let operationalStateLabel: UInt8 = 1
+    }
+    /// The field tags of ErrorStateStruct.
+    public enum ErrorStateStruct {
+        public static let errorStateId: UInt8 = 0
+        public static let errorStateLabel: UInt8 = 1
+        public static let errorStateDetails: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0061, name: "RvcOperationalState", revision: 3,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "PhaseList", type: "list", read: .view, flags: [.list, .nullable]),
+            AttributeDefinition(id: 0x0001, name: "CurrentPhase", type: "uint8", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0002, name: "CountdownTime", type: "elapsed-s", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0003, name: "OperationalStateList", type: "list", read: .view, flags: [.list]),
+            AttributeDefinition(id: 0x0004, name: "OperationalState", type: "OperationalStateEnum", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "OperationalError", type: "ErrorStateStruct", read: .view, flags: []),
         ],
         commands: [
-            CommandDefinition(id: 0x00, name: "Pause", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x01, name: "Stop", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x02, name: "Start", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x03, name: "Resume", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x04, name: "OperationalCommandResponse", invoke: .operate, timed: false, fabricScoped: false, response: nil),
-            CommandDefinition(id: 0x80, name: "GoHome", invoke: .operate, timed: false, fabricScoped: false, response: nil),
+            CommandDefinition(id: 0x00, name: "Pause", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x01, name: "Stop", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x02, name: "Start", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x03, name: "Resume", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
+            CommandDefinition(id: 0x80, name: "GoHome", invoke: .operate, timed: false, fabricScoped: false, response: 0x04),
         ],
         events: [
+            EventDefinition(id: 0x00, name: "OperationalError", priority: .critical, read: .view, fabricSensitive: false),
+            EventDefinition(id: 0x01, name: "OperationCompletion", priority: .info, read: .view, fabricSensitive: false),
         ]
     )
 }
@@ -7169,6 +8096,10 @@ public enum RvcRunModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
@@ -7176,6 +8107,10 @@ public enum RvcRunModeCluster {
         public static let directModeChange = Feature(rawValue: 1 << 20)
     }
     public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
         public static let stuck: UInt64 = 65
         public static let dustBinMissing: UInt64 = 66
         public static let dustBinFull: UInt64 = 67
@@ -7200,15 +8135,27 @@ public enum RvcRunModeCluster {
         public static let cleaning: UInt64 = 16385
         public static let mapping: UInt64 = 16386
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x0054, name: "RvcRunMode", revision: 4,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -7668,6 +8615,10 @@ public enum TemperatureAlarmCluster {
     public static let id: ClusterID = 0x0064
     public static let revision: UInt16 = 1
     public enum Attribute {
+        public static let mask: AttributeID = 0x0000
+        public static let latch: AttributeID = 0x0001
+        public static let state: AttributeID = 0x0002
+        public static let supported: AttributeID = 0x0003
         public static let criticalOverTemperatureThreshold: AttributeID = 0x0080
         public static let majorOverTemperatureThreshold: AttributeID = 0x0081
         public static let minorOverTemperatureThreshold: AttributeID = 0x0082
@@ -7676,11 +8627,17 @@ public enum TemperatureAlarmCluster {
         public static let criticalUnderTemperatureThreshold: AttributeID = 0x0085
     }
     public enum Command {
+        public static let reset: CommandID = 0x00
+        public static let modifyEnabledAlarms: CommandID = 0x01
         public static let setTemperatureAlarmThresholds: CommandID = 0x80
+    }
+    public enum Event {
+        public static let notify: EventID = 0x00
     }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let reset = Feature(rawValue: 1 << 0)
         public static let overTemperature = Feature(rawValue: 1 << 20)
         public static let underTemperature = Feature(rawValue: 1 << 21)
         public static let majorThreshold = Feature(rawValue: 1 << 22)
@@ -7695,6 +8652,10 @@ public enum TemperatureAlarmCluster {
     public static let definition = ClusterDefinition(
         id: 0x0064, name: "TemperatureAlarm", revision: 1,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "Mask", type: "AlarmBitmap", read: .view, flags: []),
+            AttributeDefinition(id: 0x0001, name: "Latch", type: "AlarmBitmap", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "State", type: "AlarmBitmap", read: .view, flags: []),
+            AttributeDefinition(id: 0x0003, name: "Supported", type: "AlarmBitmap", read: .view, flags: [.fixed]),
             AttributeDefinition(id: 0x0080, name: "CriticalOverTemperatureThreshold", type: "temperature", read: .view, flags: []),
             AttributeDefinition(id: 0x0081, name: "MajorOverTemperatureThreshold", type: "temperature", read: .view, flags: []),
             AttributeDefinition(id: 0x0082, name: "MinorOverTemperatureThreshold", type: "temperature", read: .view, flags: []),
@@ -7703,9 +8664,12 @@ public enum TemperatureAlarmCluster {
             AttributeDefinition(id: 0x0085, name: "CriticalUnderTemperatureThreshold", type: "temperature", read: .view, flags: []),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "Reset", invoke: .operate, timed: false, fabricScoped: false, response: nil),
+            CommandDefinition(id: 0x01, name: "ModifyEnabledAlarms", invoke: .operate, timed: false, fabricScoped: false, response: nil),
             CommandDefinition(id: 0x80, name: "SetTemperatureAlarmThresholds", invoke: .operate, timed: false, fabricScoped: false, response: nil),
         ],
         events: [
+            EventDefinition(id: 0x00, name: "Notify", priority: .info, read: .view, fabricSensitive: false),
         ]
     )
 }
@@ -8749,13 +9713,69 @@ public enum TlsClientManagementCluster {
     )
 }
 
-/// TotalVolatileOrganicCompoundsConcentrationMeasurement (0x042E), revision 1.
+/// TotalVolatileOrganicCompoundsConcentrationMeasurement (0x042E), revision 5.
 public enum TotalVolatileOrganicCompoundsConcentrationMeasurementCluster {
     public static let id: ClusterID = 0x042E
-    public static let revision: UInt16 = 1
+    public static let revision: UInt16 = 5
+    public enum Attribute {
+        public static let measuredValue: AttributeID = 0x0000
+        public static let minMeasuredValue: AttributeID = 0x0001
+        public static let maxMeasuredValue: AttributeID = 0x0002
+        public static let peakMeasuredValue: AttributeID = 0x0003
+        public static let peakMeasuredValueWindow: AttributeID = 0x0004
+        public static let averageMeasuredValue: AttributeID = 0x0005
+        public static let averageMeasuredValueWindow: AttributeID = 0x0006
+        public static let uncertainty: AttributeID = 0x0007
+        public static let measurementUnit: AttributeID = 0x0008
+        public static let measurementMedium: AttributeID = 0x0009
+        public static let levelValue: AttributeID = 0x000A
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let numericMeasurement = Feature(rawValue: 1 << 0)
+        public static let levelIndication = Feature(rawValue: 1 << 1)
+        public static let mediumLevel = Feature(rawValue: 1 << 2)
+        public static let criticalLevel = Feature(rawValue: 1 << 3)
+        public static let peakMeasurement = Feature(rawValue: 1 << 4)
+        public static let averageMeasurement = Feature(rawValue: 1 << 5)
+    }
+    public enum MeasurementUnitEnum {
+        public static let ppm: UInt64 = 0
+        public static let ppb: UInt64 = 1
+        public static let ppt: UInt64 = 2
+        public static let mgm3: UInt64 = 3
+        public static let ugm3: UInt64 = 4
+        public static let ngm3: UInt64 = 5
+        public static let pm3: UInt64 = 6
+        public static let bqm3: UInt64 = 7
+    }
+    public enum MeasurementMediumEnum {
+        public static let air: UInt64 = 0
+        public static let water: UInt64 = 1
+        public static let soil: UInt64 = 2
+    }
+    public enum LevelValueEnum {
+        public static let unknown: UInt64 = 0
+        public static let low: UInt64 = 1
+        public static let medium: UInt64 = 2
+        public static let high: UInt64 = 3
+        public static let critical: UInt64 = 4
+    }
     public static let definition = ClusterDefinition(
-        id: 0x042E, name: "TotalVolatileOrganicCompoundsConcentrationMeasurement", revision: 1,
+        id: 0x042E, name: "TotalVolatileOrganicCompoundsConcentrationMeasurement", revision: 5,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "MeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0001, name: "MinMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0002, name: "MaxMeasuredValue", type: "single", read: .view, flags: [.nullable, .fixed]),
+            AttributeDefinition(id: 0x0003, name: "PeakMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0004, name: "PeakMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0005, name: "AverageMeasuredValue", type: "single", read: .view, flags: [.nullable]),
+            AttributeDefinition(id: 0x0006, name: "AverageMeasuredValueWindow", type: "elapsed-s", read: .view, flags: []),
+            AttributeDefinition(id: 0x0007, name: "Uncertainty", type: "single", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0008, name: "MeasurementUnit", type: "MeasurementUnitEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0009, name: "MeasurementMedium", type: "MeasurementMediumEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x000A, name: "LevelValue", type: "LevelValueEnum", read: .view, flags: []),
         ],
         commands: [
         ],
@@ -8801,6 +9821,11 @@ public enum UserLabelCluster {
     public static let revision: UInt16 = 1
     public enum Attribute {
         public static let labelList: AttributeID = 0x0000
+    }
+    /// The field tags of LabelStruct.
+    public enum LabelStruct {
+        public static let label: UInt8 = 0
+        public static let value: UInt8 = 1
     }
     public static let definition = ClusterDefinition(
         id: 0x0041, name: "UserLabel", revision: 1,
@@ -8970,10 +9995,20 @@ public enum WaterHeaterModeCluster {
         public static let startUpMode: AttributeID = 0x0002
         public static let onMode: AttributeID = 0x0003
     }
+    public enum Command {
+        public static let changeToMode: CommandID = 0x00
+        public static let changeToModeResponse: CommandID = 0x01
+    }
     public struct Feature: OptionSet, Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
         public static let onOff = Feature(rawValue: 1 << 0)
+    }
+    public enum ModeChangeStatus {
+        public static let success: UInt64 = 0
+        public static let unsupportedMode: UInt64 = 1
+        public static let genericFailure: UInt64 = 2
+        public static let invalidInMode: UInt64 = 3
     }
     public enum ModeTag {
         public static let auto: UInt64 = 0
@@ -8990,15 +10025,27 @@ public enum WaterHeaterModeCluster {
         public static let manual: UInt64 = 16385
         public static let timed: UInt64 = 16386
     }
+    /// The field tags of ModeTagStruct.
+    public enum ModeTagStruct {
+        public static let mfgCode: UInt8 = 0
+        public static let value: UInt8 = 1
+    }
+    /// The field tags of ModeOptionStruct.
+    public enum ModeOptionStruct {
+        public static let label: UInt8 = 0
+        public static let mode: UInt8 = 1
+        public static let modeTags: UInt8 = 2
+    }
     public static let definition = ClusterDefinition(
         id: 0x009E, name: "WaterHeaterMode", revision: 1,
         attributes: [
-            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "", read: .view, flags: []),
-            AttributeDefinition(id: 0x0003, name: "OnMode", type: "", read: .view, flags: []),
+            AttributeDefinition(id: 0x0000, name: "SupportedModes", type: "list", read: .view, flags: [.list, .fixed]),
+            AttributeDefinition(id: 0x0001, name: "CurrentMode", type: "uint8", read: .view, flags: [.nonVolatile]),
+            AttributeDefinition(id: 0x0002, name: "StartUpMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0003, name: "OnMode", type: "uint8", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ChangeToMode", invoke: .operate, timed: false, fabricScoped: false, response: 0x01),
         ],
         events: [
         ]
@@ -9009,11 +10056,57 @@ public enum WaterHeaterModeCluster {
 public enum WaterTankLevelMonitoringCluster {
     public static let id: ClusterID = 0x0079
     public static let revision: UInt16 = 1
+    public enum Attribute {
+        public static let condition: AttributeID = 0x0000
+        public static let degradationDirection: AttributeID = 0x0001
+        public static let changeIndication: AttributeID = 0x0002
+        public static let inPlaceIndicator: AttributeID = 0x0003
+        public static let lastChangedTime: AttributeID = 0x0004
+        public static let replacementProductList: AttributeID = 0x0005
+    }
+    public enum Command {
+        public static let resetCondition: CommandID = 0x00
+    }
+    public struct Feature: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let condition = Feature(rawValue: 1 << 0)
+        public static let warning = Feature(rawValue: 1 << 1)
+        public static let replacementProductList = Feature(rawValue: 1 << 2)
+    }
+    public enum DegradationDirectionEnum {
+        public static let up: UInt64 = 0
+        public static let down: UInt64 = 1
+    }
+    public enum ChangeIndicationEnum {
+        public static let ok: UInt64 = 0
+        public static let warning: UInt64 = 1
+        public static let critical: UInt64 = 2
+    }
+    public enum ProductIdentifierTypeEnum {
+        public static let upc: UInt64 = 0
+        public static let gtin8: UInt64 = 1
+        public static let ean: UInt64 = 2
+        public static let gtin14: UInt64 = 3
+        public static let oem: UInt64 = 4
+    }
+    /// The field tags of ReplacementProductStruct.
+    public enum ReplacementProductStruct {
+        public static let productIdentifierType: UInt8 = 0
+        public static let productIdentifierValue: UInt8 = 1
+    }
     public static let definition = ClusterDefinition(
         id: 0x0079, name: "WaterTankLevelMonitoring", revision: 1,
         attributes: [
+            AttributeDefinition(id: 0x0000, name: "Condition", type: "percent", read: .view, flags: []),
+            AttributeDefinition(id: 0x0001, name: "DegradationDirection", type: "DegradationDirectionEnum", read: .view, flags: [.fixed]),
+            AttributeDefinition(id: 0x0002, name: "ChangeIndication", type: "ChangeIndicationEnum", read: .view, flags: []),
+            AttributeDefinition(id: 0x0003, name: "InPlaceIndicator", type: "bool", read: .view, flags: []),
+            AttributeDefinition(id: 0x0004, name: "LastChangedTime", type: "epoch-s", read: .view, write: .operate, flags: [.nullable, .nonVolatile]),
+            AttributeDefinition(id: 0x0005, name: "ReplacementProductList", type: "list", read: .view, flags: [.list, .fixed]),
         ],
         commands: [
+            CommandDefinition(id: 0x00, name: "ResetCondition", invoke: .operate, timed: false, fabricScoped: false, response: nil),
         ],
         events: [
         ]

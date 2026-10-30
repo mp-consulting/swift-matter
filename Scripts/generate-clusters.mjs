@@ -118,6 +118,28 @@ for (const file of readdirSync(directory).filter(name => name.endsWith(".element
 }
 
 const kinds = kind => elements.filter(element => element.kind === kind);
+
+// A derived cluster (`type: "ModeBase"`, `"OperationalState"`) lists only what it changes: it gets its base's
+// elements, each overlaid with the derived one of the same kind and name, recursively, so attributes keep their types,
+// access and qualities, and commands, events and datatypes the derived file leaves out are there.
+const clustersByName = new Map(kinds("Cluster").map(cluster => [cluster.name, cluster]));
+function overlay(base, derived) {
+    const merged = { ...base, ...derived, children: mergeChildren(base.children ?? [], derived.children ?? []) };
+    // A datatype that names itself as its type ("ModeOptionStruct" of type "ModeOptionStruct") is the base's.
+    if (derived.type === derived.name) merged.type = base.type;
+    return merged;
+}
+function mergeChildren(baseChildren, derivedChildren) {
+    const key = child => `${child.kind}:${child.name}`;
+    const own = new Map(derivedChildren.map(child => [key(child), child]));
+    const merged = baseChildren.map(child => own.has(key(child)) ? overlay(child, own.get(key(child))) : child);
+    const inherited = new Set(baseChildren.map(key));
+    return merged.concat(derivedChildren.filter(child => !inherited.has(key(child))));
+}
+function resolved(cluster) {
+    const base = cluster.type && cluster.type !== cluster.name ? clustersByName.get(cluster.type) : undefined;
+    return base ? { ...cluster, children: mergeChildren(resolved(base).children, cluster.children) } : cluster;
+}
 const childrenOf = (element, kind) => element.children.filter(child => child.kind === kind);
 const hex = (value, width) => "0x" + value.toString(16).toUpperCase().padStart(width, "0");
 /// UpperCamelCase of an element name.
@@ -174,7 +196,7 @@ emit("// swiftlint:disable all");
 emit("");
 
 // Clusters.
-const clusters = kinds("Cluster").filter(cluster => cluster.id !== undefined && cluster.id !== null);
+const clusters = kinds("Cluster").filter(cluster => cluster.id !== undefined && cluster.id !== null).map(resolved);
 emit("extension ClusterDefinition {");
 emit("    /// Every standard cluster, by id.");
 emit("    public static let standard: [ClusterID: ClusterDefinition] = [");
