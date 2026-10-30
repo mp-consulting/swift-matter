@@ -136,7 +136,7 @@ public actor InteractionServer: ProtocolHandler {
     }
 
     /// Why a session was refused: whom the ACL saw (node, CATs, fabric) and the privileges held and needed.
-    private func logDenial(_ path: String, _ session: SessionInfo, held: Privilege?, required: Privilege) {
+    private func logDenial(_ path: some CustomStringConvertible, _ session: SessionInfo, held: Privilege?, required: Privilege) {
         logger.debug("Denied \(path) to \(session.kind) node \(zeroPadded(session.peerNodeID, width: 16, radix: 16)) on fabric \(session.fabricIndex ?? 0), CATs [\(session.caseAuthenticatedTags.map { zeroPadded($0, width: 8, radix: 16) }.joined(separator: ", "))]: holds \(held.map { "\($0)" } ?? "nothing"), needs \(required)")
     }
 
@@ -383,7 +383,7 @@ public actor InteractionServer: ProtocolHandler {
         }
         let privilege = await privilege(context.session, endpoint, clusterID)
         guard privilege?.grants(required) ?? false else {
-            logDenial("\(path)", context.session, held: privilege, required: required)
+            logDenial(path, context.session, held: privilege, required: required)
             return StatusError(.unsupportedAccess)
         }
         if definition.flags.contains(.timedWrite), !context.isTimed { return StatusError(.needsTimedInteraction) }
@@ -457,7 +457,7 @@ public actor InteractionServer: ProtocolHandler {
         }
         let privilege = await privilege(context.session, endpoint, path.cluster)
         guard privilege?.grants(definition.invoke) ?? false else {
-            logDenial("\(path)", context.session, held: privilege, required: definition.invoke)
+            logDenial(path, context.session, held: privilege, required: definition.invoke)
             return .status(StatusError(.unsupportedAccess))
         }
         if definition.fabricScoped, context.fabricIndex == nil { return .status(StatusError(.unsupportedAccess)) }
