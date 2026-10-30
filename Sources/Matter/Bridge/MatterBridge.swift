@@ -270,7 +270,7 @@ public actor MatterBridge {
         var partClusters: [[any ClusterHandler]] = []
         for part in parts { partClusters.append(await part.kind.makeClusters(part.handler)) }
         // A battery powers the whole device: its Power Source is on the Bridged Node (Core §9.12.2.3).
-        let power = battery ? DeviceClusters.battery(endpoint: top) : nil
+        let power = battery ? DeviceClusters.battery(endpoints: [top] + (parts.count > 1 ? partEndpoints : [])) : nil
         var topTypes = [DeviceTypes.bridgedNode] + (battery ? [DeviceTypes.powerSource] : [])
         var topClusters: [any ClusterHandler] = [basicInformation] + (power.map { [$0] } ?? [])
         if parts.count == 1 {

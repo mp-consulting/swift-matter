@@ -351,14 +351,15 @@ enum DeviceClusters {
 
     // MARK: - Power Source (§11.7), a battery
 
-    static func battery(endpoint: EndpointNumber) -> AttributeCluster {
+    /// A battery powering `endpoints` (Power Source's EndpointList, Core §11.7.6.32).
+    static func battery(endpoints: [EndpointNumber]) -> AttributeCluster {
         typealias A = PowerSourceCluster.Attribute
         let features = PowerSourceCluster.Feature([.battery, .replaceable])
         return AttributeCluster(PowerSourceCluster.definition, featureMap: features.rawValue, attributes: [
             A.status: .unsigned(1), A.order: .unsigned(0), A.description: .utf8("Battery"), A.batChargeLevel: .unsigned(0),
             A.batReplacementNeeded: .bool(false), A.batReplaceability: .unsigned(0), A.batPercentRemaining: .null,
             A.activeBatFaults: .array([]), A.batReplacementDescription: .utf8(""), A.batQuantity: .unsigned(1),
-            A.endpointList: .array([TLVElement(.unsigned(UInt64(endpoint)))]),
+            A.endpointList: .array(endpoints.map { TLVElement(.unsigned(UInt64($0))) }),
         ])
     }
 }
