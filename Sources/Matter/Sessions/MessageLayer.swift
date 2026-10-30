@@ -564,9 +564,12 @@ public actor MessageLayer {
         let jitter = reliability.scaled(Self.syncJitter * Double.random(in: 0...1)), timeout = reliability.scaled(Self.syncTimeout)
         let task = Task { [weak self] in
             guard (try? await Task.sleep(for: jitter)) != nil else { return }
-            await self?.sendSync(.messageCounterSyncRequest, challenge, to: session.peerNodeID, exchangeID: exchangeID, initiator: true,
-                                 candidate: candidate, peer: session.peerAddress)
-            guard (try? await Task.sleep(for: timeout)) != nil else { return }
+            // Sent reliably: once more halfway through the wait, in case the first one was lost.
+            for _ in 0..<2 {
+                await self?.sendSync(.messageCounterSyncRequest, challenge, to: session.peerNodeID, exchangeID: exchangeID, initiator: true,
+                                     candidate: candidate, peer: session.peerAddress)
+                guard (try? await Task.sleep(for: timeout / 2)) != nil else { return }
+            }
             // Cancelled when the answer came; otherwise the waiting messages are dropped.
             await self?.dropSync(key)
         }
@@ -592,6 +595,9 @@ public actor MessageLayer {
                   MatterCrypto.equal(Array(message.payload[4...]), pending.challenge) else { return }
             pending.timeout.cancel()
             pendingSyncs[key] = nil
+            // The response is reliable: acknowledged so the peer stops sending it.
+            await sendSync(.standaloneAck, [], to: source, exchangeID: pending.exchangeID, initiator: true, reliable: false,
+                           acknowledging: message.header.counter, candidate: candidate, peer: peer)
             var reader = ByteReader(message.payload, truncated: MessageError.truncated)
             guard let counter = try? reader.read(UInt32.self) else { return }
             await groups.synchronize(fabric: candidate.fabric, source: source, counter: counter)
@@ -606,9 +612,9 @@ public actor MessageLayer {
 
     /// An MCSP message to one node, under the group key being synchronized, with the C and P flags (Core §4.18.5).
     private func sendSync(_ opcode: SecureChannelOpcode, _ payload: [UInt8], to destination: NodeID, exchangeID: UInt16, initiator: Bool,
-                          acknowledging acked: UInt32? = nil, candidate: Groups.Candidate, peer: PeerAddress) async {
+                          reliable: Bool = true, acknowledging acked: UInt32? = nil, candidate: Groups.Candidate, peer: PeerAddress) async {
         guard let groups, let source = await groups.nodeID(fabric: candidate.fabric) else { return }
-        let payloadHeader = PayloadHeader(isInitiator: initiator, needsAck: true, ackedCounter: acked, opcode: opcode.rawValue,
+        let payloadHeader = PayloadHeader(isInitiator: initiator, needsAck: reliable, ackedCounter: acked, opcode: opcode.rawValue,
                                           exchangeID: exchangeID, protocolID: .secureChannel)
         guard let frame = try? Message.groupFrame(payloadHeader: payloadHeader, payload: payload, destination: .node(destination),
                                                   source: source, counter: await groups.nextControlCounter(), control: true,

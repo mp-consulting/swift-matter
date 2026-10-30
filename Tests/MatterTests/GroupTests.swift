@@ -176,6 +176,10 @@ struct GroupTests {
         // The answer carries the sender's counter and the challenge: the waiting command runs, once.
         try await peer.send(try syncResponse(to: request, counter: 500, key: key), to: .memory("node"))
         try await eventually { await commands.values == [.setOn(true)] }
+        // The response is acknowledged on its exchange, under the group key.
+        try await eventually {
+            await received.values.contains { (try? open($0, key: key))?.payloadHeader.opcode == SecureChannelOpcode.standaloneAck.rawValue }
+        }
         try await peer.send(on, to: .memory("node"))
         try await peer.send(try await groupInvoke(fixture, OnOffCluster.Command.off, counter: 501), to: .memory("node"))
         try await eventually { await commands.values == [.setOn(true), .setOn(false)] }
