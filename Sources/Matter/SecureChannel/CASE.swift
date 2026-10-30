@@ -41,6 +41,26 @@ public enum CASE {
             next.id = id
             return next
         }
+
+        /// The ticket as the node stores it.
+        var tlv: TLVElement {
+            TLVElement(.structure([
+                .field(0, .bytes(id)), .field(1, .bytes(sharedSecret)), .field(2, .unsigned(peerNodeID)), .field(3, .unsigned(localNodeID)),
+                .field(4, .unsigned(UInt64(fabricIndex ?? 0))),
+                .field(5, .array(caseAuthenticatedTags.map { TLVElement(.unsigned(UInt64($0))) })),
+            ]))
+        }
+
+        init?(tlv: TLVValue) {
+            guard let id = tlv[0]?.bytes, let secret = tlv[1]?.bytes, let peer = tlv[2]?.uint, let local = tlv[3]?.uint,
+                  let fabric = tlv[4]?.uint.flatMap(FabricIndex.init(exactly:)) else { return nil }
+            self.id = id
+            sharedSecret = secret
+            peerNodeID = peer
+            localNodeID = local
+            fabricIndex = fabric == 0 ? nil : fabric
+            caseAuthenticatedTags = (tlv[5]?.elements ?? []).compactMap { $0.value.uint.flatMap(UInt32.init(exactly:)) }
+        }
     }
 
     /// Installs a resumed session: its keys come from the ticket's secret and the new resumption id (Core §4.14.2.6.7),
@@ -363,26 +383,51 @@ public enum CASE {
     }
 }
 
-/// The resumption tickets a responder keeps, most recent first, a bounded number of them.
+/// The resumption tickets a responder keeps, most recent first: one per peer (its latest session), a bounded number of
+/// them. With `storage` they outlive a restart, so controllers resume rather than run CASE again (Core §4.14.2.2).
 public actor ResumptionStore {
     private var tickets: [CASE.ResumptionTicket] = []
     let capacity: Int
+    private let storage: (any MatterStorage)?
 
-    public init(capacity: Int = 32) { self.capacity = capacity }
+    public init(capacity: Int = 32, storage: (any MatterStorage)? = nil) {
+        self.capacity = capacity
+        self.storage = storage
+    }
 
-    func put(_ ticket: CASE.ResumptionTicket) {
+    /// Reads the stored tickets.
+    func load() async {
+        guard let data = await storage?.value(for: StorageKey.resumptions), let list = try? TLVDecoder.decode(data).value.elements else { return }
+        tickets = list.compactMap { CASE.ResumptionTicket(tlv: $0.value) }
+    }
+
+    func put(_ ticket: CASE.ResumptionTicket) async {
+        // A peer's new session replaces its older ones: a busy controller does not crowd the others out.
+        tickets.removeAll { $0.fabricIndex == ticket.fabricIndex && $0.peerNodeID == ticket.peerNodeID }
         tickets.insert(ticket, at: 0)
         if tickets.count > capacity { tickets.removeLast(tickets.count - capacity) }
+        await save()
     }
 
     /// The ticket with this id, removed: a resumption id is used once.
-    func take(_ id: [UInt8]) -> CASE.ResumptionTicket? {
+    func take(_ id: [UInt8]) async -> CASE.ResumptionTicket? {
         guard let index = tickets.firstIndex(where: { MatterCrypto.equal($0.id, id) }) else { return nil }
-        return tickets.remove(at: index)
+        let ticket = tickets.remove(at: index)
+        await save()
+        return ticket
     }
 
     /// Forgets the tickets of a removed fabric.
-    public func removeFabric(_ index: FabricIndex) { tickets.removeAll { $0.fabricIndex == index } }
+    public func removeFabric(_ index: FabricIndex) async {
+        tickets.removeAll { $0.fabricIndex == index }
+        await save()
+    }
+
+    var count: Int { tickets.count }
+
+    private func save() async {
+        try? await storage?.setValue(TLVEncoder.encode(.array(tickets.map(\.tlv))), for: StorageKey.resumptions)
+    }
 }
 
 /// Answers Sigma1 with the node's fabrics.

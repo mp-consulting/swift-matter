@@ -125,7 +125,8 @@ public actor MatterNode {
         let commissioning = commissioning
         let pase = PASE.ResponderContext(verifier: { await commissioning.paseVerifier() },
                                          attempted: { await commissioning.paseAttempted($0) })
-        let resumptions = ResumptionStore()
+        let resumptions = ResumptionStore(storage: storage)
+        await resumptions.load()
         try await layer.register(SecureChannelServer(pase: pase, caseResponder: CASEServer(fabrics: fabrics, resumptions: resumptions)),
                                  for: .secureChannel)
         try await interactionServer.serve(on: layer)

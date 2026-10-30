@@ -201,6 +201,29 @@ struct FileStorageTests {
 }
 
 struct ResumptionTests {
+    @Test func resumesAfterTheNodeRestartsAndKeepsOneTicketPerPeer() async throws {
+        let fixture = try await CommissioningFixture()
+        _ = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)
+        let identity = await fixture.commissioner.identity
+        let layer = fixture.commissioner.layer
+        let (_, older) = try await CASE.establishResumable(with: .memory("node"), peerNodeID: 0x42, identity: identity, layer: layer)
+        let (_, ticket) = try await CASE.establishResumable(with: .memory("node"), peerNodeID: 0x42, identity: identity, layer: layer)
+
+        // The same node again, on the same storage: the ticket survived the restart, and resuming keeps its secret.
+        await fixture.node.stop()
+        var configuration = NodeConfiguration(passcode: CommissioningFixture.passcode, discriminator: 3840)
+        configuration.reliability = .fast
+        let again = try await MatterNode(configuration: configuration, storage: fixture.storage, transport: await fixture.network.transport(named: "again"))
+        try await again.start()
+        let (_, resumed) = try await CASE.establishResumable(with: .memory("again"), peerNodeID: 0x42, identity: identity, layer: layer, ticket: ticket)
+        #expect(resumed.sharedSecret == ticket.sharedSecret)
+
+        // The peer's newer session replaced its older ticket: that one gets a full CASE, with a new secret.
+        let (_, fallback) = try await CASE.establishResumable(with: .memory("again"), peerNodeID: 0x42, identity: identity, layer: layer, ticket: older)
+        #expect(fallback.sharedSecret != older.sharedSecret)
+        await again.stop()
+    }
+
     @Test func resumesASessionAndFallsBackWhenTheTicketIsUnknown() async throws {
         let fixture = try await CommissioningFixture()
         _ = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)
