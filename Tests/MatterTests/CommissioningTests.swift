@@ -171,6 +171,40 @@ struct CommissioningTests {
         #expect(acl.elements?.count == 1)
     }
 
+    /// Apple Home adds its second fabric over the first fabric's CASE session: that session stays on its fabric, so the
+    /// controller keeps its access there. Only a PASE session moves to the fabric AddNOC adds (Core §11.18.6.8).
+    @Test func keepsACASESessionOnItsFabricWhenItAddsAnother() async throws {
+        let fixture = try await CommissioningFixture()
+        let session = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)
+        let client = fixture.commissioner.client
+        let general = GeneralCommissioningCluster.self
+        let credentials = OperationalCredentialsCluster.self
+        func invoke(_ cluster: ClusterID, _ command: CommandID, _ fields: [TLVElement]) async throws -> TLVValue? {
+            switch try await client.invoke(CommandPath(endpoint: 0, cluster: cluster, command: command), fields: .structure(fields),
+                                           session: session.localSessionID) {
+            case .response(_, let fields): return fields
+            case .status(let status): #expect(status.status == .success); return nil
+            }
+        }
+        let other = try Commissioner(layer: MessageLayer(transport: await fixture.network.transport(named: "other"), reliability: .fast),
+                                     fabricID: 0xBEEF, nodeID: 0x3344)
+
+        #expect(try await invoke(general.id, general.Command.armFailSafe, [.field(0, .unsigned(60)), .field(1, .unsigned(2))])?[0]?.uint == 0)
+        let csr = try #require(try await invoke(credentials.id, credentials.Command.csrRequest, [.field(0, .bytes(MatterCrypto.random(32)))]))
+        let key = try CertificationRequest.publicKey(of: try TLVStruct(decoding: try TLVStruct(csr).bytes(0)).bytes(1))
+        _ = try await invoke(credentials.id, credentials.Command.addTrustedRootCertificate, [.field(0, .bytes(other.rootCertificate.tlvEncoded))])
+        let noc = try await other.issue(publicKey: Array(key.x963Representation), nodeID: 0x77)
+        let added = try #require(try await invoke(credentials.id, credentials.Command.addNoc, [
+            .field(0, .bytes(noc.tlvEncoded)), .field(2, .bytes(MatterCrypto.random(16))), .field(3, .unsigned(0x3344)), .field(4, .unsigned(0xFFF1)),
+        ]))
+        #expect(added[0]?.uint == 0)
+
+        // Still the first fabric's session: its fabric list is the first fabric, and its Administer entry still grants.
+        let fabrics = try await client.read(endpoint: 0, cluster: credentials.id, attribute: credentials.Attribute.fabrics, session: session.localSessionID)
+        #expect(fabrics.elements?.compactMap { $0.value[credentials.FabricDescriptorStruct.fabricId]?.uint } == [0xFAB])
+        #expect(await fixture.node.fabrics.all.map(\.fabricID) == [0xFAB, 0xBEEF])
+    }
+
     @Test func persistsAcrossRestarts() async throws {
         let fixture = try await CommissioningFixture()
         _ = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)

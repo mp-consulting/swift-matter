@@ -245,8 +245,9 @@ public actor Commissioning {
         failSafe?.addedFabric = index
         failSafe?.pendingKey = nil
         failSafe?.pendingRoot = nil
-        // The commissioning session now belongs to the new fabric (Core §11.18.6.8).
-        await layer?.bind(session: session.localSessionID, toFabric: index)
+        // A PASE session now belongs to the new fabric (Core §11.18.6.8). A CASE session stays on its own: Apple Home adds
+        // its second fabric over the first one's, and moving it lost the controller its access there.
+        if session.kind == .pase { await layer?.bind(session: session.localSessionID, toFabric: index) }
         return (.ok, index)
     }
 
