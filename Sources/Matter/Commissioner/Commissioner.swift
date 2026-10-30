@@ -10,8 +10,8 @@ public enum CommissioningError: Error, Equatable, Sendable {
 /// A commissioner with its own fabric (Core §5.5): it verifies a commissionee's attestation, issues it an operational
 /// certificate and completes commissioning over CASE. Tests and tools use it as a controller.
 public actor Commissioner {
-    public let layer: MessageLayer
-    public let client: InteractionClient
+    public nonisolated let layer: MessageLayer
+    public nonisolated let client: InteractionClient
     public let fabricID: UInt64
     public let nodeID: NodeID
     public let vendorID: UInt16

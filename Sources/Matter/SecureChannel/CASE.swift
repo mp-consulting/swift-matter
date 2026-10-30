@@ -13,6 +13,25 @@ public enum CASEError: Error, Equatable, Sendable {
 public enum CASE {
     static let sigma2Nonce = Array("NCASE_Sigma2N".utf8)
     static let sigma3Nonce = Array("NCASE_Sigma3N".utf8)
+    /// The resumption MICs' nonces (Core §4.14.2.3): both spell "Sigma" then "S1" or "S2".
+    static let resume1Nonce = Array("NCASE_SigmaS1".utf8)
+    static let resume2Nonce = Array("NCASE_SigmaS2".utf8)
+
+    /// What resumes a CASE session (Core §4.14.2.2): its resumption id and shared secret, and whom it was with.
+    public struct ResumptionTicket: Sendable, Equatable {
+        public var id: [UInt8]
+        var sharedSecret: [UInt8]
+        public var peerNodeID: NodeID
+        public var localNodeID: NodeID
+        public var fabricIndex: FabricIndex?
+        public var caseAuthenticatedTags: [UInt32]
+    }
+
+    /// A resumption key: S1RK, S2RK or the resumed session keys, from the shared secret, the initiator's random and a
+    /// resumption id (Core §4.14.2.6).
+    static func resumptionKey(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], id: [UInt8], info: String, length: Int = 16) -> [UInt8] {
+        MatterCrypto.kdf(key: ticket.sharedSecret, salt: initiatorRandom + id, info: Array(info.utf8), length: length)
+    }
 
     /// What one side presents: its certificates, its operational key, and the fabric's root and IPK.
     public struct Identity: Sendable {
@@ -106,9 +125,9 @@ public enum CASE {
     // MARK: - Responder
 
     /// Runs the responder on an unsecured exchange whose first message was Sigma1.
-    static func respond(on exchange: Exchange, sigma1: Message, fabrics: FabricTable, logger: Logger) async {
+    static func respond(on exchange: Exchange, sigma1: Message, fabrics: FabricTable, resumptions: ResumptionStore, logger: Logger) async {
         do {
-            try await runResponder(exchange, sigma1: sigma1, fabrics: fabrics)
+            try await runResponder(exchange, sigma1: sigma1, fabrics: fabrics, resumptions: resumptions)
         } catch let error as CASEError {
             logger.debug("CASE with \(exchange.initialSession.peerAddress) failed: \(error)")
             try? await exchange.sendStatus(error == .noSharedRoot ? .noSharedTrustRoots : .invalidParameter)
@@ -118,7 +137,7 @@ public enum CASE {
         }
     }
 
-    private static func runResponder(_ exchange: Exchange, sigma1: Message, fabrics: FabricTable) async throws {
+    private static func runResponder(_ exchange: Exchange, sigma1: Message, fabrics: FabricTable, resumptions: ResumptionStore) async throws {
         let layer = exchange.layer
         let msg1 = sigma1.payload
         let fields = try TLVStruct(decoding: msg1)
@@ -129,7 +148,19 @@ public enum CASE {
         guard initiatorRandom.count == 32, initiatorSessionID != 0, destination.count == 32, initiatorKey.count == 65 else {
             throw CASEError.invalidMessage
         }
-        // Resumption is not offered: a Sigma1 with resumption fields gets a full Sigma2 (Core §4.14.2.3).
+        // Resumption needs both its fields; a ticket that is unknown or whose MIC fails gets a full Sigma2 (Core §4.14.2.3).
+        switch (fields[6]?.bytes, fields[7]?.bytes) {
+        case (nil, nil): break
+        case (let id?, let mic?):
+            if let ticket = await resumptions.take(id), await fabrics.fabric(ticket.fabricIndex ?? 0) != nil,
+               (try? AESCCM(key: resumptionKey(ticket, initiatorRandom: initiatorRandom, id: id, info: "Sigma1_Resume"))
+                .open(mic, nonce: resume1Nonce)) != nil {
+                try await resume(exchange, ticket: ticket, initiatorRandom: initiatorRandom, initiatorSessionID: initiatorSessionID,
+                                 peerParameters: SessionParameters(tlv: fields[5]), resumptions: resumptions)
+                return
+            }
+        default: throw CASEError.invalidMessage
+        }
         guard let fabric = await fabrics.fabric(forDestination: destination, initiatorRandom: initiatorRandom) else {
             throw CASEError.noSharedRoot
         }
@@ -142,7 +173,8 @@ public enum CASE {
 
         let tbs2 = tbsData(noc: identity.noc, icac: identity.icac, ownKey: ephemeralKey, peerKey: initiatorKey)
         let signature = Array(try identity.operationalKey.signature(for: tbs2).rawRepresentation)
-        let tbe2 = tbeData(identity, signature: signature, resumptionID: MatterCrypto.random(16))
+        let resumptionID = MatterCrypto.random(16)
+        let tbe2 = tbeData(identity, signature: signature, resumptionID: resumptionID)
         let s2k = sigma2Key(shared, ipk: identity.ipk, responderRandom: responderRandom, responderKey: ephemeralKey, msg1: msg1)
         let encrypted2 = try AESCCM(key: s2k).seal(tbe2, nonce: sigma2Nonce)
         let msg2 = TLVEncoder.encode(.structure([
@@ -166,18 +198,54 @@ public enum CASE {
                                peerAddress: exchange.initialSession.peerAddress)
         _ = try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: false, info: info,
                                      peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
+        await resumptions.put(ResumptionTicket(id: resumptionID, sharedSecret: shared, peerNodeID: info.peerNodeID, localNodeID: info.localNodeID,
+                                               fabricIndex: info.fabricIndex, caseAuthenticatedTags: info.caseAuthenticatedTags))
         try await exchange.sendStatus(.sessionEstablished)
+    }
+
+    /// Answers a valid resumption with Sigma2_Resume and installs the resumed session once the initiator confirms it.
+    private static func resume(_ exchange: Exchange, ticket: ResumptionTicket, initiatorRandom: [UInt8], initiatorSessionID: UInt16,
+                               peerParameters: SessionParameters, resumptions: ResumptionStore) async throws {
+        let layer = exchange.layer
+        let newID = MatterCrypto.random(16)
+        let localSessionID = await layer.allocateSessionID()
+        let mic = try AESCCM(key: resumptionKey(ticket, initiatorRandom: initiatorRandom, id: newID, info: "Sigma2_Resume"))
+            .seal([], nonce: resume2Nonce)
+        try await exchange.send(.sigma2Resume, TLVEncoder.encode(.structure([
+            .field(1, .bytes(newID)), .field(2, .bytes(mic)), .field(3, .unsigned(UInt64(localSessionID))), .field(4, layer.parameters.tlv),
+        ])))
+        // SigmaFinished comes from the initiator in a resumption.
+        let finished = try await exchange.receive()
+        guard finished.payloadHeader.opcode == SecureChannelOpcode.statusReport.rawValue,
+              try StatusReport(decoding: finished.payload) == .sessionEstablished
+        else { throw CASEError.invalidMessage }
+        let keys = resumptionKey(ticket, initiatorRandom: initiatorRandom, id: newID, info: "SessionResumptionKeys", length: 48)
+        let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: initiatorSessionID, fabricIndex: ticket.fabricIndex,
+                               peerNodeID: ticket.peerNodeID, localNodeID: ticket.localNodeID, caseAuthenticatedTags: ticket.caseAuthenticatedTags,
+                               attestationChallenge: Array(keys[32..<48]), peerAddress: exchange.initialSession.peerAddress)
+        try await layer.addSecureSession(info: info, encryptKey: Array(keys[16..<32]), decryptKey: Array(keys[0..<16]),
+                                         peerParameters: peerParameters)
+        var next = ticket
+        next.id = newID
+        await resumptions.put(next)
     }
 
     // MARK: - Initiator
 
     /// Establishes a CASE session with a node of the identity's fabric.
     public static func establish(with peer: PeerAddress, peerNodeID: NodeID, identity: Identity, layer: MessageLayer) async throws -> SessionInfo {
+        try await establishResumable(with: peer, peerNodeID: peerNodeID, identity: identity, layer: layer).session
+    }
+
+    /// Establishes a CASE session, resuming a previous one when `ticket` is given and the peer still knows it; the
+    /// returned ticket resumes this one.
+    public static func establishResumable(with peer: PeerAddress, peerNodeID: NodeID, identity: Identity, layer: MessageLayer,
+                                          ticket: ResumptionTicket? = nil) async throws -> (session: SessionInfo, ticket: ResumptionTicket) {
         let exchange = await layer.newUnsecuredExchange(to: peer, protocolID: .secureChannel)
         do {
-            let session = try await initiate(exchange, peer: peer, peerNodeID: peerNodeID, identity: identity, layer: layer)
+            let result = try await initiate(exchange, peer: peer, peerNodeID: peerNodeID, identity: identity, layer: layer, ticket: ticket)
             await exchange.close()
-            return session
+            return result
         } catch {
             await exchange.close()
             throw error
@@ -185,7 +253,7 @@ public enum CASE {
     }
 
     private static func initiate(_ exchange: Exchange, peer: PeerAddress, peerNodeID: NodeID, identity: Identity,
-                                 layer: MessageLayer) async throws -> SessionInfo {
+                                 layer: MessageLayer, ticket: ResumptionTicket?) async throws -> (session: SessionInfo, ticket: ResumptionTicket) {
         guard let fabricID = identity.noc.fabricID else { throw CASEError.invalidCertificate }
         let ephemeral = P256.KeyAgreement.PrivateKey()
         let ephemeralKey = Array(ephemeral.publicKey.x963Representation)
@@ -193,13 +261,23 @@ public enum CASE {
         let localSessionID = await layer.allocateSessionID()
         let destination = Fabric.destinationID(initiatorRandom: initiatorRandom, rootPublicKey: identity.rcac.publicKey,
                                                fabricID: fabricID, nodeID: peerNodeID, ipk: identity.ipk)
-        let msg1 = TLVEncoder.encode(.structure([
+        var sigma1: [TLVElement] = [
             .field(1, .bytes(initiatorRandom)), .field(2, .unsigned(UInt64(localSessionID))), .field(3, .bytes(destination)),
             .field(4, .bytes(ephemeralKey)), .field(5, layer.parameters.tlv),
-        ]))
+        ]
+        if let ticket {
+            let mic = try AESCCM(key: resumptionKey(ticket, initiatorRandom: initiatorRandom, id: ticket.id, info: "Sigma1_Resume"))
+                .seal([], nonce: resume1Nonce)
+            sigma1 += [.field(6, .bytes(ticket.id)), .field(7, .bytes(mic))]
+        }
+        let msg1 = TLVEncoder.encode(.structure(sigma1))
         try await exchange.send(.sigma1, msg1)
 
         let sigma2 = try await exchange.receive()
+        if let ticket, sigma2.payloadHeader.opcode == SecureChannelOpcode.sigma2Resume.rawValue {
+            return try await resumed(exchange, sigma2Resume: sigma2, ticket: ticket, initiatorRandom: initiatorRandom,
+                                     localSessionID: localSessionID, peer: peer, layer: layer)
+        }
         do {
             try PASE.expect(sigma2, .sigma2)
         } catch PASEError.rejected(let report) {
@@ -217,7 +295,9 @@ public enum CASE {
             throw CASEError.invalidMessage
         }
         let peerNOC = try verifyPeer(tbe2, rcac: identity.rcac, expectedFabricID: fabricID, ownKey: ephemeralKey, peerKey: responderKey)
-        guard peerNOC.nodeID == peerNodeID else { throw CASEError.invalidCertificate }
+        guard peerNOC.nodeID == peerNodeID, let resumptionID = tbe2[4]?.bytes, resumptionID.count == 16 else {
+            throw CASEError.invalidCertificate
+        }
 
         let tbs3 = tbsData(noc: identity.noc, icac: identity.icac, ownKey: ephemeralKey, peerKey: responderKey)
         let tbe3 = tbeData(identity, signature: Array(try identity.operationalKey.signature(for: tbs3).rawRepresentation))
@@ -235,22 +315,70 @@ public enum CASE {
         let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: identity.fabricIndex,
                                peerNodeID: peerNodeID, localNodeID: identity.noc.nodeID ?? 0,
                                caseAuthenticatedTags: peerNOC.caseAuthenticatedTags, peerAddress: peer)
-        return try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: true, info: info,
-                                        peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
+        let session = try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: true, info: info,
+                                               peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
+        return (session, ResumptionTicket(id: resumptionID, sharedSecret: shared, peerNodeID: peerNodeID, localNodeID: info.localNodeID,
+                                          fabricIndex: identity.fabricIndex, caseAuthenticatedTags: info.caseAuthenticatedTags))
     }
+
+    /// Checks Sigma2_Resume, confirms with SigmaFinished and installs the resumed session.
+    private static func resumed(_ exchange: Exchange, sigma2Resume: Message, ticket: ResumptionTicket, initiatorRandom: [UInt8],
+                                localSessionID: UInt16, peer: PeerAddress, layer: MessageLayer) async throws -> (session: SessionInfo, ticket: ResumptionTicket) {
+        let fields = try TLVStruct(decoding: sigma2Resume.payload)
+        let newID = try fields.bytes(1)
+        let peerSessionID = try fields.uint(3, as: UInt16.self)
+        guard newID.count == 16, peerSessionID != 0,
+              (try? AESCCM(key: resumptionKey(ticket, initiatorRandom: initiatorRandom, id: newID, info: "Sigma2_Resume"))
+                .open(try fields.bytes(2), nonce: resume2Nonce)) != nil
+        else { throw CASEError.invalidMessage }
+        try await exchange.sendStatus(.sessionEstablished)
+        let keys = resumptionKey(ticket, initiatorRandom: initiatorRandom, id: newID, info: "SessionResumptionKeys", length: 48)
+        let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: ticket.fabricIndex,
+                               peerNodeID: ticket.peerNodeID, localNodeID: ticket.localNodeID, caseAuthenticatedTags: ticket.caseAuthenticatedTags,
+                               attestationChallenge: Array(keys[32..<48]), peerAddress: peer)
+        let session = try await layer.addSecureSession(info: info, encryptKey: Array(keys[0..<16]), decryptKey: Array(keys[16..<32]),
+                                                       peerParameters: SessionParameters(tlv: fields[4]))
+        var next = ticket
+        next.id = newID
+        return (session, next)
+    }
+}
+
+/// The resumption tickets a responder keeps, most recent first, a bounded number of them.
+public actor ResumptionStore {
+    private var tickets: [CASE.ResumptionTicket] = []
+    let capacity: Int
+
+    public init(capacity: Int = 32) { self.capacity = capacity }
+
+    func put(_ ticket: CASE.ResumptionTicket) {
+        tickets.insert(ticket, at: 0)
+        if tickets.count > capacity { tickets.removeLast(tickets.count - capacity) }
+    }
+
+    /// The ticket with this id, removed: a resumption id is used once.
+    func take(_ id: [UInt8]) -> CASE.ResumptionTicket? {
+        guard let index = tickets.firstIndex(where: { MatterCrypto.equal($0.id, id) }) else { return nil }
+        return tickets.remove(at: index)
+    }
+
+    /// Forgets the tickets of a removed fabric.
+    func removeFabric(_ index: FabricIndex) { tickets.removeAll { $0.fabricIndex == index } }
 }
 
 /// Answers Sigma1 with the node's fabrics.
 public struct CASEServer: CASEResponding {
     let fabrics: FabricTable
+    let resumptions: ResumptionStore
     let logger: Logger
 
-    public init(fabrics: FabricTable, logger: Logger = Logger(label: "matter.case")) {
+    public init(fabrics: FabricTable, resumptions: ResumptionStore = ResumptionStore(), logger: Logger = Logger(label: "matter.case")) {
         self.fabrics = fabrics
+        self.resumptions = resumptions
         self.logger = logger
     }
 
     public func respond(on exchange: Exchange, sigma1: Message) async {
-        await CASE.respond(on: exchange, sigma1: sigma1, fabrics: fabrics, logger: logger)
+        await CASE.respond(on: exchange, sigma1: sigma1, fabrics: fabrics, resumptions: resumptions, logger: logger)
     }
 }

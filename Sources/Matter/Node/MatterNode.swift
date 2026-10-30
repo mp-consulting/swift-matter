@@ -112,7 +112,9 @@ public actor MatterNode {
         let commissioning = commissioning
         let pase = PASE.ResponderContext(verifier: { await commissioning.paseVerifier() },
                                          attempted: { await commissioning.paseAttempted($0) })
-        try await layer.register(SecureChannelServer(pase: pase, caseResponder: CASEServer(fabrics: fabrics)), for: .secureChannel)
+        let resumptions = ResumptionStore()
+        try await layer.register(SecureChannelServer(pase: pase, caseResponder: CASEServer(fabrics: fabrics, resumptions: resumptions)),
+                                 for: .secureChannel)
         try await interactionServer.serve(on: layer)
         try await layer.start()
 
@@ -134,7 +136,10 @@ public actor MatterNode {
         }
         await fabrics.onChange { await advertise($0) }
         let layer = layer
-        await commissioning.onFabricRemoved { index in await layer.removeSessions { $0.fabricIndex == index } }
+        await commissioning.onFabricRemoved { index in
+            await layer.removeSessions { $0.fabricIndex == index }
+            await resumptions.removeFabric(index)
+        }
         await advertise(await fabrics.all)
 
         if await fabrics.count == 0 {

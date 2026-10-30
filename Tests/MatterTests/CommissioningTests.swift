@@ -186,3 +186,29 @@ struct FileStorageTests {
         #expect(await storage.value(for: "fabrics") == nil)
     }
 }
+
+struct ResumptionTests {
+    @Test func resumesASessionAndFallsBackWhenTheTicketIsUnknown() async throws {
+        let fixture = try await CommissioningFixture()
+        _ = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)
+        let identity = await fixture.commissioner.identity
+        let layer = fixture.commissioner.layer
+
+        let (first, ticket) = try await CASE.establishResumable(with: .memory("node"), peerNodeID: 0x42, identity: identity, layer: layer)
+        let (resumed, next) = try await CASE.establishResumable(with: .memory("node"), peerNodeID: 0x42, identity: identity, layer: layer,
+                                                                ticket: ticket)
+        #expect(next.id != ticket.id)
+        #expect(resumed.localSessionID != first.localSessionID)
+        // The resumed session carries reads like any other.
+        let value = try await fixture.commissioner.client.read(endpoint: 0, cluster: BasicInformationCluster.id,
+                                                               attribute: BasicInformationCluster.Attribute.vendorId, session: resumed.localSessionID)
+        #expect(value == .unsigned(0xFFF1))
+
+        // A used ticket is not accepted again: the responder answers with a full Sigma2 instead.
+        let (fallback, fresh) = try await CASE.establishResumable(with: .memory("node"), peerNodeID: 0x42, identity: identity, layer: layer,
+                                                                  ticket: ticket)
+        #expect(fresh.id != next.id)
+        _ = try await fixture.commissioner.client.read(endpoint: 0, cluster: BasicInformationCluster.id,
+                                                       attribute: BasicInformationCluster.Attribute.vendorId, session: fallback.localSessionID)
+    }
+}
