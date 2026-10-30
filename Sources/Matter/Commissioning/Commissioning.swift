@@ -227,11 +227,8 @@ public actor Commissioning {
         guard state.addedFabric == nil, state.updatedFabric == nil else { throw StatusError(.constraintError) }
         guard let key = state.pendingKey, !state.keyForUpdate, let root = state.pendingRoot else { return (.missingCSR, nil) }
         guard ipk.count == 16 else { throw StatusError(.invalidCommand) }
-        guard let noc = try? MatterCertificate(tlv: nocBytes) else { return (.invalidNOC, nil) }
-        let icac = icacBytes.flatMap { try? MatterCertificate(tlv: $0) }
-        if icacBytes != nil, icac == nil { return (.invalidNOC, nil) }
-        guard noc.publicKey == Array(key.publicKey.x963Representation) else { return (.invalidPublicKey, nil) }
-        do { try CertificateChain.validate(noc: noc, icac: icac, rcac: root) } catch { return (.invalidNOC, nil) }
+        let (decoded, icac, refusal) = decodeChain(noc: nocBytes, icac: icacBytes, key: key, root: root)
+        guard refusal == nil, let noc = decoded else { return (refusal ?? .invalidNOC, nil) }
         // The admin subject is a node id or a CAT, never a group or a PAKE id (Core §11.18.6.8).
         guard adminSubject >> 32 == 0xFFFF_FFFD || (1...0xFFFF_FFEF_FFFF_FFFF).contains(adminSubject) else {
             return (.invalidAdminSubject, nil)
@@ -253,6 +250,33 @@ public actor Commissioning {
         return (.ok, index)
     }
 
+    /// A NOC and ICAC as AddNOC and UpdateNOC take them: decoded, for the pending key, chained to the root; else the
+    /// status to answer, its reason logged. An empty ICAC is no ICAC, as connectedhomeip takes it (Apple Home sends one).
+    private func decodeChain(noc nocBytes: [UInt8], icac icacBytes: [UInt8]?, key: P256.Signing.PrivateKey, root: MatterCertificate)
+        -> (MatterCertificate?, MatterCertificate?, NOCStatus?) {
+        let noc: MatterCertificate, icac: MatterCertificate?
+        do {
+            noc = try MatterCertificate(tlv: nocBytes)
+            icac = try icacBytes.flatMap { $0.isEmpty ? nil : try MatterCertificate(tlv: $0) }
+        } catch {
+            // Certificates are public (a public key and ids, never a private key): shown to reproduce the failure.
+            logger.notice("NOC refused: a certificate does not decode (\(error))")
+            logger.debug("NOC certificates: NOC \(hexString(nocBytes)) ICAC \(icacBytes.map { hexString($0) } ?? "none")")
+            return (nil, nil, .invalidNOC)
+        }
+        guard noc.publicKey == Array(key.publicKey.x963Representation) else {
+            logger.notice("NOC refused: its key is not the CSR's")
+            return (nil, nil, .invalidPublicKey)
+        }
+        do {
+            try CertificateChain.validate(noc: noc, icac: icac, rcac: root)
+        } catch {
+            logger.notice("NOC refused: its chain does not validate (\(error); ICAC \(icac == nil ? "absent" : "present"))")
+            return (nil, nil, .invalidNOC)
+        }
+        return (noc, icac, nil)
+    }
+
     /// UpdateNOC (Core §11.18.6.9): a new NOC for the accessing fabric, with the key from the last CSRRequest.
     func updateNOC(noc nocBytes: [UInt8], icac icacBytes: [UInt8]?, session: SessionInfo) async throws -> NOCStatus {
         let state = try requireFailSafe(session)
@@ -261,11 +285,8 @@ public actor Commissioning {
         guard let fabricIndex = session.fabricIndex else { throw StatusError(.unsupportedAccess) }
         guard let key = state.pendingKey, state.keyForUpdate else { return .missingCSR }
         guard let fabric = await fabrics.fabric(fabricIndex) else { return .invalidFabricIndex }
-        guard let noc = try? MatterCertificate(tlv: nocBytes) else { return .invalidNOC }
-        let icac = icacBytes.flatMap { try? MatterCertificate(tlv: $0) }
-        if icacBytes != nil, icac == nil { return .invalidNOC }
-        guard noc.publicKey == Array(key.publicKey.x963Representation) else { return .invalidPublicKey }
-        do { try CertificateChain.validate(noc: noc, icac: icac, rcac: fabric.rootCertificate) } catch { return .invalidNOC }
+        let (decoded, icac, refusal) = decodeChain(noc: nocBytes, icac: icacBytes, key: key, root: fabric.rootCertificate)
+        guard refusal == nil, let noc = decoded else { return refusal ?? .invalidNOC }
         guard noc.fabricID == fabric.fabricID else { return .invalidNOC }
         var updated = fabric
         updated.operationalCertificate = noc

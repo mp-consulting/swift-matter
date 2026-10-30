@@ -24,6 +24,10 @@ public actor Commissioner {
     let trustedPAAs: [[UInt8]]
     private var nextSerial: UInt8 = 2
 
+    /// Sends AddNOC's ICAC field empty rather than leaving it out, as Apple Home does (`sendEmptyICAC()`, for tests).
+    private var sendsEmptyICAC = false
+    func sendEmptyICAC() { sendsEmptyICAC = true }
+
     public init(layer: MessageLayer, fabricID: UInt64 = 1, nodeID: NodeID = 0x0001_0000_0000_0001, vendorID: UInt16 = 0xFFF1,
                 ipkEpochKey: [UInt8] = MatterCrypto.random(16), trustedPAAs: [[UInt8]] = [TestCredentials.paaCertificate]) throws {
         self.layer = layer
@@ -127,7 +131,7 @@ public actor Commissioner {
         let added = try TLVStruct(try responseFields(await command(credentials.id, credentials.Command.addNoc, [
             .field(0, .bytes(noc.tlvEncoded)), .field(2, .bytes(ipkEpochKey)), .field(3, .unsigned(self.nodeID)),
             .field(4, .unsigned(UInt64(vendorID))),
-        ], session: pase)))
+        ] + (sendsEmptyICAC ? [.field(1, .bytes([]))] : []), session: pase)))
         let status = try added.uint(0, as: UInt8.self)
         guard status == 0 else { throw CommissioningError.commandFailed("AddNOC", status) }
 

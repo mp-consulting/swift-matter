@@ -46,6 +46,15 @@ struct CommissioningFixture {
 }
 
 struct CommissioningTests {
+    @Test func takesAnEmptyICACAsNone() async throws {
+        // Apple Home sends AddNOC's ICAC empty: the NOC chains to the root alone.
+        let fixture = try await CommissioningFixture()
+        await fixture.commissioner.sendEmptyICAC()
+        let session = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)
+        #expect(session.kind == .case)
+        #expect(await fixture.node.fabrics.count == 1)
+    }
+
     @Test func commissionsAndOperatesOverCASE() async throws {
         let fixture = try await CommissioningFixture()
         #expect(await fixture.node.commissioning.windowStatus == .basic)
