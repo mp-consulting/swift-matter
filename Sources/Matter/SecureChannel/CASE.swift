@@ -82,8 +82,8 @@ public enum CASE {
         SessionKeys(secret: ticket.sharedSecret, salt: initiatorRandom + ticket.id, info: Array("SessionResumptionKeys".utf8))
     }
 
-    /// A resumption key: S1RK, S2RK or the resumed session keys, from the shared secret, the initiator's random and a
-    /// resumption id (Core §4.14.2.6).
+    /// A resumption MIC's key, S1RK or S2RK, from the shared secret, the initiator's random and a resumption id
+    /// (Core §4.14.2.6).
     static func resumptionKey(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], id: [UInt8], info: String) -> [UInt8] {
         MatterCrypto.kdf(key: ticket.sharedSecret, salt: initiatorRandom + id, info: Array(info.utf8), length: 16)
     }
@@ -214,10 +214,11 @@ public enum CASE {
                 .open(mic, nonce: resume1Nonce)) != nil {
                 try await resume(exchange, ticket: ticket, initiatorRandom: initiatorRandom, initiatorSessionID: initiatorSessionID,
                                  peerParameters: SessionParameters(tlv: fields[5]), resumptions: resumptions)
-                logger.debug("CASE with \(exchange.initialSession.peerAddress): resumed node \(zeroPadded(ticket.peerNodeID, width: 16, radix: 16))'s session on fabric \(ticket.fabricIndex ?? 0)")
+                let node = zeroPadded(ticket.peerNodeID, width: 16, radix: 16)
+                logger.debug("CASE with \(exchange.initialSession.peerAddress): resumed node \(node)'s session on fabric \(ticket.fabricIndex ?? 0)")
                 return
             } else {
-                logger.debug("CASE with \(exchange.initialSession.peerAddress): no ticket resumes it, establishing a new session")
+                logger.debug("CASE with \(exchange.initialSession.peerAddress): its ticket is unknown, used or fails its MIC, establishing a new session")
             }
         default: throw CASEError.invalidMessage
         }
@@ -260,7 +261,8 @@ public enum CASE {
                                      peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
         await resumptions.put(ResumptionTicket(id: resumptionID, sharedSecret: shared, session: info))
         try await exchange.sendStatus(.sessionEstablished)
-        logger.debug("CASE with \(exchange.initialSession.peerAddress): node \(zeroPadded(info.peerNodeID, width: 16, radix: 16)) on fabric \(fabric.index)")
+        let node = zeroPadded(info.peerNodeID, width: 16, radix: 16)
+        logger.debug("CASE with \(exchange.initialSession.peerAddress): node \(node) on fabric \(fabric.index)")
     }
 
     /// Answers a valid resumption with Sigma2_Resume and installs the resumed session once the initiator confirms it.
