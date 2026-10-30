@@ -491,12 +491,17 @@ extension DeviceClusters {
         // The setpoints may meet: a device that keeps a gap between them says so by refusing a write.
         if auto { attributes[A.minSetpointDeadBand] = .signed(0) }
         let cluster = AttributeCluster(ThermostatCluster.definition, featureMap: features.rawValue, attributes: attributes)
-        await cluster.onWrite { _, attribute, value, _ in
+        await cluster.onWrite { cluster, attribute, value, _ in
             switch attribute {
             case A.occupiedHeatingSetpoint where heating:
-                try await deliver(.setHeatingSetpoint(celsius: Double(try setpoint(value, in: heat)) / 100), to: handler)
+                let target = try setpoint(value, in: heat)
+                // With auto, heating stays at or below cooling (the dead band is 0).
+                if auto, let cooling = await cluster.value(A.occupiedCoolingSetpoint)?.int, target > cooling { throw StatusError(.constraintError) }
+                try await deliver(.setHeatingSetpoint(celsius: Double(target) / 100), to: handler)
             case A.occupiedCoolingSetpoint where cooling:
-                try await deliver(.setCoolingSetpoint(celsius: Double(try setpoint(value, in: cool)) / 100), to: handler)
+                let target = try setpoint(value, in: cool)
+                if auto, let heating = await cluster.value(A.occupiedHeatingSetpoint)?.int, target < heating { throw StatusError(.constraintError) }
+                try await deliver(.setCoolingSetpoint(celsius: Double(target) / 100), to: handler)
             case A.systemMode:
                 typealias Mode = ThermostatCluster.SystemModeEnum
                 // Off, cool, heat and auto, as the features allow.

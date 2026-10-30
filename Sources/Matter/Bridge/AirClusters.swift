@@ -10,14 +10,7 @@ public enum Concentration: Hashable, Sendable, CaseIterable {
     /// Total volatile organic compounds, in µg/m³.
     case totalVolatileOrganicCompounds
 
-    var clusterID: ClusterID {
-        switch self {
-        case .carbonDioxide: CarbonDioxideConcentrationMeasurementCluster.id
-        case .pm25: Pm25ConcentrationMeasurementCluster.id
-        case .pm10: Pm10ConcentrationMeasurementCluster.id
-        case .totalVolatileOrganicCompounds: TotalVolatileOrganicCompoundsConcentrationMeasurementCluster.id
-        }
-    }
+    var clusterID: ClusterID { definition.id }
 
     var definition: ClusterDefinition {
         switch self {

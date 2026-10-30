@@ -440,6 +440,12 @@ struct BridgeTests {
         #expect(statuses.map(\.1.status) == [.success, .constraintError])
         #expect(await commands.values == [.setThermostatMode(UInt8(Mode.auto))])
         #expect(try await fixture.read(auto.endpoint, ThermostatCluster.id, ThermostatCluster.Attribute.minSetpointDeadBand) == .signed(0))
+        // Heating may meet cooling (26 °C), not pass it.
+        let setpoints = try await fixture.base.commissioner.client.write([
+            (AttributePath(endpoint: auto.endpoint, cluster: ThermostatCluster.id, attribute: ThermostatCluster.Attribute.occupiedHeatingSetpoint), .signed(2600)),
+            (AttributePath(endpoint: auto.endpoint, cluster: ThermostatCluster.id, attribute: ThermostatCluster.Attribute.occupiedHeatingSetpoint), .signed(2700)),
+        ], session: fixture.session)
+        #expect(setpoints.map(\.1.status) == [.success, .constraintError])
         let features = ThermostatCluster.Feature(rawValue: UInt32(try await fixture.read(heater.endpoint, ThermostatCluster.id, 0xFFFC).uint ?? 0))
         #expect(!features.contains(.autoMode))
     }

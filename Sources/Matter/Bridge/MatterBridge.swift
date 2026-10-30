@@ -96,7 +96,7 @@ public struct DeviceKind: Sendable {
     }
     /// A button: presses are reported with `BridgedDevice.press`.
     public static let genericSwitch = sensor(DeviceTypes.genericSwitch) { DeviceClusters.genericSwitch() }
-    public static let airQualitySensor = sensor(DeviceTypes.airQualitySensor) { DeviceClusters.airQuality() }
+    public static let airQualitySensor = DeviceKind.airQualitySensor(measuring: [])
     /// An air quality sensor that measures these concentrations too (`DeviceState.concentration`).
     public static func airQualitySensor(measuring concentrations: [Concentration]) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.airQualitySensor]) { handler in
