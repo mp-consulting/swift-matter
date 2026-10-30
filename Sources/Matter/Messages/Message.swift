@@ -111,6 +111,20 @@ public struct MessageHeader: Hashable, Sendable {
         return (header, reader.offset)
     }
 
+    /// Obfuscates or restores a private frame's counter, source and destination (Core §4.9): AES-CTR with the
+    /// privacy key, its nonce the session id big-endian and bytes 5 to 15 of the MIC. Its own inverse.
+    static func togglePrivacy(_ frame: [UInt8], privacyKey: AESCCM) throws -> [UInt8] {
+        guard frame.count >= 8 + AESCCM.micLength else { throw MessageError.truncated }
+        let flags = frame[0]
+        let fieldsEnd = 4 + 4 + (flags & 0x04 != 0 ? 8 : 0) + [0, 8, 2, 0][Int(flags & 0x03)]
+        guard frame.count >= fieldsEnd + AESCCM.micLength else { throw MessageError.truncated }
+        let mic = frame.suffix(AESCCM.micLength)
+        let nonce = [frame[2], frame[1]] + Array(mic.dropFirst(5))
+        var out = frame
+        out.replaceSubrange(4..<fieldsEnd, with: privacyKey.privacy(Array(frame[4..<fieldsEnd]), nonce: nonce))
+        return out
+    }
+
     /// The AEAD nonce (Core §4.8.1.1): security flags, counter and the source node id, little-endian.
     func nonce(sourceNodeID: UInt64) -> [UInt8] {
         var nonce: [UInt8] = [securityFlags]
@@ -191,6 +205,17 @@ public struct Message: Sendable {
     public func sealedFrame(key: AESCCM, nonceSourceNodeID: UInt64) throws -> [UInt8] {
         let aad = header.encoded
         return aad + (try key.seal(payloadHeader.encoded + payload, nonce: header.nonce(sourceNodeID: nonceSourceNodeID), additionalData: aad))
+    }
+
+    /// A group message (Core §4.16.2): sent to the group's node id under the key's group session id, with the source
+    /// node id as the nonce's, and private (only the P flag among the security flags).
+    public static func groupFrame(payloadHeader: PayloadHeader, payload: [UInt8], group: GroupID, source: NodeID, counter: UInt32,
+                                  operationalKey: [UInt8]) throws -> [UInt8] {
+        let header = MessageHeader(sessionID: Groups.groupSessionID(operationalKey: operationalKey), sessionType: .group, privacy: true,
+                                   counter: counter, source: source, destination: .group(group))
+        let message = Message(header: header, payloadHeader: payloadHeader, payload: payload)
+        let sealed = try message.sealedFrame(key: AESCCM(key: operationalKey), nonceSourceNodeID: source)
+        return try MessageHeader.togglePrivacy(sealed, privacyKey: AESCCM(key: MatterCrypto.privacyKey(encryptionKey: operationalKey)))
     }
 
     /// Decodes the protocol header and payload of an unsecured message's remaining bytes.

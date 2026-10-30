@@ -17,10 +17,15 @@ public struct DeviceKind: Sendable {
         self.makeClusters = makeClusters
     }
 
-    /// Identify, and Groups and Scenes Management for devices that act (Device Library §4-5).
-    static func base(_ handler: @escaping DeviceCommandHandler, actuator: Bool) async -> [any ClusterHandler] {
-        var clusters: [any ClusterHandler] = [await DeviceClusters.identify(handler)]
-        if actuator { clusters += [await DeviceClusters.groups(), await DeviceClusters.scenes()] }
+    /// Identify, and Groups and Scenes Management for devices that act (Device Library §4-5); `groups` alone for a
+    /// device that takes group commands without scenes (a fan).
+    static func base(_ handler: @escaping DeviceCommandHandler, actuator: Bool, groups: Bool? = nil) async -> [any ClusterHandler] {
+        let identify = await DeviceClusters.identify(handler)
+        var clusters: [any ClusterHandler] = [identify]
+        if groups ?? actuator {
+            clusters.append(await DeviceClusters.groups { await identify.value(IdentifyCluster.Attribute.identifyTime)?.uint ?? 0 > 0 })
+        }
+        if actuator { clusters.append(await DeviceClusters.scenes()) }
         return clusters
     }
 
@@ -67,7 +72,7 @@ public struct DeviceKind: Sendable {
         await base(handler, actuator: false) + [await DeviceClusters.windowCovering(handler)]
     }
     public static let fan = DeviceKind(deviceTypes: [DeviceTypes.fan]) { handler in
-        await base(handler, actuator: false) + [await DeviceClusters.groups(), await DeviceClusters.fanControl(handler)]
+        await base(handler, actuator: false, groups: true) + [await DeviceClusters.fanControl(handler)]
     }
     public static func thermostat(heating: Bool = true, cooling: Bool = false) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.thermostat]) { handler in

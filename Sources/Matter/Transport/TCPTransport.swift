@@ -182,6 +182,10 @@ public final class CombinedTransport: MatterTransport {
         await streams.onDisconnect(handler)
     }
 
+    public func setMulticastGroups(_ addresses: [SocketAddress]) async {
+        await datagrams.setMulticastGroups(addresses)
+    }
+
     public func close() async {
         await streams.close()
         await datagrams.close()

@@ -38,14 +38,14 @@ public struct NodeInformation: Sendable {
 enum RootClusters {
     static func make(information: NodeInformation, commissioning: Commissioning, fabrics: FabricTable,
                      accessControl: AccessControlEntries, attestation: DeviceAttestation, startTime: ContinuousClock.Instant,
-                     storage: any MatterStorage) async -> [any ClusterHandler] {
+                     storage: any MatterStorage, groups: Groups) async -> [any ClusterHandler] {
         [
             await basicInformation(information, storage: storage),
             await generalCommissioning(commissioning),
             await operationalCredentials(commissioning: commissioning, fabrics: fabrics, accessControl: accessControl,
                                          attestation: attestation),
             await accessControlCluster(accessControl),
-            await groupKeyManagement(),
+            await groupKeyManagement(groups),
             await networkCommissioning(),
             await generalDiagnostics(startTime: startTime),
             await administratorCommissioning(commissioning),
@@ -271,27 +271,52 @@ enum RootClusters {
 
     // MARK: - Group Key Management (Core §11.2)
 
-    static func groupKeyManagement() async -> AttributeCluster {
+    static func groupKeyManagement(_ groups: Groups) async -> AttributeCluster {
         typealias A = GroupKeyManagementCluster.Attribute
         typealias C = GroupKeyManagementCluster.Command
         let cluster = AttributeCluster(GroupKeyManagementCluster.definition, attributes: [
-            A.groupKeyMap: .array([]), A.groupTable: .array([]), A.maxGroupsPerFabric: .unsigned(0), A.maxGroupKeysPerFabric: .unsigned(1),
+            A.maxGroupsPerFabric: .unsigned(UInt64(Groups.maxGroupsPerFabric)),
+            // The IPK's set and the others (Core §11.2.6.4).
+            A.maxGroupKeysPerFabric: .unsigned(UInt64(1 + Groups.maxKeySetsPerFabric)),
         ])
-        // Only the IPK (key set 0) exists: groups are not supported (MaxGroupsPerFabric 0).
-        await cluster.handle(C.keySetWrite) { _, _, _ in throw StatusError(.resourceExhausted) }
-        await cluster.handle(C.keySetRead) { _, fields, _ in
-            guard try TLVStruct(fields).uint(0) == 0 else { throw StatusError(.notFound) }
-            return .response(C.keySetReadResponse, .structure([.field(0, .structure([
+        await cluster.provide(A.groupKeyMap) { context in FabricScopedList.read(await groups.keyMap, context: context) }
+        await cluster.provide(A.groupTable) { context in FabricScopedList.read(await groups.groupTable, context: context) }
+        await cluster.onWrite { cluster, attribute, value, context in
+            guard attribute == A.groupKeyMap, let fabric = context.fabricIndex else { throw StatusError(.unsupportedWrite) }
+            try await groups.setKeyMap(FabricScopedList.entries(value, fabric: fabric), fabric: fabric)
+            await cluster.changed([A.groupKeyMap])
+        }
+        @Sendable func fabric(_ context: AccessContext) throws -> FabricIndex {
+            guard let fabric = context.fabricIndex else { throw StatusError(.unsupportedAccess) }
+            return fabric
+        }
+        @Sendable func keySetID(_ fields: TLVValue) throws -> UInt16 {
+            guard let value = fields[0]?.uint, let id = UInt16(exactly: value) else { throw StatusError(.invalidCommand) }
+            return id
+        }
+        await cluster.handle(C.keySetWrite) { _, fields, context in
+            guard let set = fields[0] else { throw StatusError(.invalidCommand) }
+            try await groups.writeKeySet(set, fabric: try fabric(context))
+            return .success
+        }
+        await cluster.handle(C.keySetRead) { _, fields, context in
+            let id = try keySetID(fields)
+            // The IPK's set (0) is read with its keys and times left out; the others as stored.
+            let set = id == 0 ? .structure([
                 .field(0, .unsigned(0)), .field(1, .unsigned(0)), .field(2, .null), .field(3, .null), .field(4, .null),
                 .field(5, .null), .field(6, .null), .field(7, .null),
-            ]))]))
+            ]) : await groups.keySetResponse(id, fabric: try fabric(context))
+            guard let set else { throw StatusError(.notFound) }
+            return .response(C.keySetReadResponse, .structure([.field(0, set)]))
         }
-        await cluster.handle(C.keySetRemove) { _, fields, _ in
-            // The IPK cannot be removed (Core §11.2.8.4).
-            throw StatusError(try TLVStruct(fields).uint(0) == 0 ? .invalidCommand : .notFound)
+        await cluster.handle(C.keySetRemove) { cluster, fields, context in
+            try await groups.removeKeySet(try keySetID(fields), fabric: try fabric(context))
+            await cluster.changed([A.groupKeyMap])
+            return .success
         }
-        await cluster.handle(C.keySetReadAllIndices) { _, _, _ in
-            .response(C.keySetReadAllIndicesResponse, .structure([.field(0, .array([TLVElement(.unsigned(0))]))]))
+        await cluster.handle(C.keySetReadAllIndices) { _, _, context in
+            let ids = [0] + (await groups.keySetIDs(fabric: try fabric(context)))
+            return .response(C.keySetReadAllIndicesResponse, .structure([.field(0, .array(ids.map { TLVElement(.unsigned(UInt64($0))) }))]))
         }
         return cluster
     }

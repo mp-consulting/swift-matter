@@ -24,6 +24,11 @@ public enum MatterCrypto {
         return SymmetricKey(size: SymmetricKeySize(bitCount: count * 8)).withUnsafeBytes { Array($0) }
     }
 
+    /// PrivacyKey: the KDF of an encryption key with "PrivacyKey" (Core §4.9.1).
+    public static func privacyKey(encryptionKey: [UInt8]) -> [UInt8] {
+        kdf(key: encryptionKey, salt: [], info: Array("PrivacyKey".utf8), length: 16)
+    }
+
     /// Constant-time comparison of secrets.
     public static func equal(_ a: [UInt8], _ b: [UInt8]) -> Bool {
         guard a.count == b.count else { return false }
@@ -121,6 +126,12 @@ public struct AESCCM: Sendable {
 
     /// CTR mode from counter block A_i (flags with L - 1, the nonce, i); messages are short enough that the 16-bit
     /// counter never carries into the nonce.
+    /// Crypto_Privacy_Encrypt and _Decrypt (Core §3.7): AES-CTR with NIST 800-38C's counters for q = 2, which are
+    /// CCM's own from counter 1 (connectedhomeip computes it as CCM without its tag).
+    func privacy(_ input: [UInt8], nonce: [UInt8]) -> [UInt8] {
+        ctr(input, nonce: nonce, startingAt: 1)
+    }
+
     private func ctr(_ input: [UInt8], nonce: [UInt8], startingAt counter: UInt16) -> [UInt8] {
         guard !input.isEmpty else { return [] }
         var block: [UInt8] = [0x01] + nonce

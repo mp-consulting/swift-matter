@@ -9,12 +9,15 @@ public struct AccessContext: Sendable {
     public var isTimed: Bool
     /// The exchange, for clusters that need to know the peer (commissioning).
     public var exchange: Exchange?
+    /// The node's groups, for the Groups cluster.
+    public var groups: Groups?
 
-    public init(session: SessionInfo, isFabricFiltered: Bool = true, isTimed: Bool = false, exchange: Exchange? = nil) {
+    public init(session: SessionInfo, isFabricFiltered: Bool = true, isTimed: Bool = false, exchange: Exchange? = nil, groups: Groups? = nil) {
         self.session = session
         self.isFabricFiltered = isFabricFiltered
         self.isTimed = isTimed
         self.exchange = exchange
+        self.groups = groups
     }
 
     public var fabricIndex: FabricIndex? { session.fabricIndex }
@@ -124,7 +127,8 @@ public actor AttributeCluster: ClusterHandler {
     private var commands: [CommandID: CommandHandler] = [:]
     private var writeHook: WriteHook?
     public private(set) var dataVersion = UInt32.random(in: 0...UInt32.max)
-    private var endpoint: EndpointNumber = 0
+    /// The endpoint the cluster is on.
+    public private(set) var endpoint: EndpointNumber = 0
     private var reporter = ChangeReporter.none
 
     /// A cluster with initial attribute values; attributes without a value are unsupported.

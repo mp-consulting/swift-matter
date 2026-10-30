@@ -55,10 +55,13 @@ public protocol MatterTransport: Sendable {
     func close() async
     /// Called with a stream peer whose connection closed; datagram transports never call it.
     func onDisconnect(_ handler: @escaping @Sendable (PeerAddress) async -> Void) async
+    /// The multicast addresses to receive on: the node's groups (Core §4.16.3).
+    func setMulticastGroups(_ addresses: [SocketAddress]) async
 }
 
 extension MatterTransport {
     public func onDisconnect(_ handler: @escaping @Sendable (PeerAddress) async -> Void) async {}
+    public func setMulticastGroups(_ addresses: [SocketAddress]) async {}
 }
 
 /// UDP over IPv6 (dual-stack, so IPv4 peers work too) on Matter's port, 5540 by default.
@@ -67,6 +70,7 @@ public final class UDPTransport: MatterTransport {
     private let group: EventLoopGroup
     private let channel = NIOLockedValueBox<Channel?>(nil)
     private let inbox = NIOLockedValueBox<DatagramInbox?>(nil)
+    private let joined = NIOLockedValueBox<[SocketAddress]>([])
 
     public init(port: Int = 5540, group: EventLoopGroup = MultiThreadedEventLoopGroup.singleton) {
         self.port = port
@@ -107,6 +111,25 @@ public final class UDPTransport: MatterTransport {
         let channel = channel.withLockedValue { value in defer { value = nil }; return value }
         try? await channel?.close()
         inbox.withLockedValue { value in value?.close(); value = nil }
+        joined.withLockedValue { $0 = [] }
+    }
+
+    /// Joins the groups' multicast addresses on every IPv6 interface, and leaves those no longer listed.
+    public func setMulticastGroups(_ addresses: [SocketAddress]) async {
+        guard let multicast = channel.withLockedValue({ $0 }) as? MulticastChannel else { return }
+        let devices = ((try? System.enumerateDevices()) ?? []).filter { $0.address?.protocol == .inet6 && $0.multicastSupported }
+        let wanted = Set(addresses.map(\.description))
+        let (join, leave) = joined.withLockedValue { joined -> ([SocketAddress], [SocketAddress]) in
+            let current = Set(joined.map(\.description))
+            defer { joined = addresses }
+            return (addresses.filter { !current.contains($0.description) }, joined.filter { !wanted.contains($0.description) })
+        }
+        for address in leave {
+            for device in devices { try? await multicast.leaveGroup(address, device: device).get() }
+        }
+        for address in join {
+            for device in devices { try? await multicast.joinGroup(address, device: device).get() }
+        }
     }
 
     /// An IPv4 peer as itself, not as the IPv4-mapped IPv6 address a dual-stack socket reports, so replies match the

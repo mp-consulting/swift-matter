@@ -56,25 +56,65 @@ enum DeviceClusters {
     // MARK: - Groups (§1.3) and Scenes Management (§1.4)
 
     /// Groups without capacity: group communication is not supported, so every add fails with RESOURCE_EXHAUSTED.
-    static func groups() async -> AttributeCluster {
+    /// Groups (Application Clusters §1.3): the endpoint's memberships in the node's `Groups`, with names. A group
+    /// needs its key material first (GroupKeyMap); `identifying` says whether AddGroupIfIdentifying applies.
+    static func groups(identifying: @escaping @Sendable () async -> Bool) async -> AttributeCluster {
         typealias C = GroupsCluster.Command
-        let cluster = AttributeCluster(GroupsCluster.definition, attributes: [GroupsCluster.Attribute.nameSupport: .unsigned(0)])
-        @Sendable func status(_ command: CommandID, _ status: IMStatus, _ fields: TLVValue) -> InvokeResult {
-            .response(command, .structure([.field(0, .unsigned(UInt64(status.rawValue))), .field(1, .unsigned(fields[0]?.uint ?? 0))]))
+        // NameSupport's bit 7: names are supported, as the GroupNames feature says (§1.3.6.1).
+        let cluster = AttributeCluster(GroupsCluster.definition, featureMap: GroupsCluster.Feature.groupNames.rawValue,
+                                       attributes: [GroupsCluster.Attribute.nameSupport: .unsigned(0x80)])
+        /// The store, the accessing fabric and the endpoint, or the status a command fails with without them.
+        @Sendable func scope(_ cluster: AttributeCluster, _ context: AccessContext) async throws -> (Groups, FabricIndex, EndpointNumber) {
+            guard let groups = context.groups, let fabric = context.fabricIndex else { throw StatusError(.unsupportedAccess) }
+            return (groups, fabric, await cluster.endpoint)
+        }
+        @Sendable func group(_ fields: TLVValue) throws -> GroupID {
+            guard let value = fields[0]?.uint, let group = GroupID(exactly: value) else { throw StatusError(.invalidCommand) }
+            return group
+        }
+        @Sendable func status(_ command: CommandID, _ status: IMStatus, _ group: GroupID) -> InvokeResult {
+            .response(command, .structure([.field(0, .unsigned(UInt64(status.rawValue))), .field(1, .unsigned(UInt64(group)))]))
+        }
+        @Sendable func add(_ cluster: AttributeCluster, _ fields: TLVValue, _ context: AccessContext) async throws -> IMStatus {
+            let (groups, fabric, endpoint) = try await scope(cluster, context)
+            guard let name = fields[1]?.string else { throw StatusError(.invalidCommand) }
+            return await groups.add(try group(fields), name: name, endpoint: endpoint, fabric: fabric)
         }
         await cluster.handle([
-            C.addGroup: { _, fields, _ in status(C.addGroupResponse, .resourceExhausted, fields) },
-            C.addGroupIfIdentifying: { _, _, _ in throw StatusError(.resourceExhausted) },
-            C.viewGroup: { _, fields, _ in
-                .response(C.viewGroupResponse, .structure([
-                    .field(0, .unsigned(UInt64(IMStatus.notFound.rawValue))), .field(1, .unsigned(fields[0]?.uint ?? 0)), .field(2, .utf8("")),
+            C.addGroup: { cluster, fields, context in status(C.addGroupResponse, try await add(cluster, fields, context), try group(fields)) },
+            C.addGroupIfIdentifying: { cluster, fields, context in
+                guard await identifying() else { return .success }
+                let added = try await add(cluster, fields, context)
+                return added == .success ? .success : .status(StatusError(added))
+            },
+            C.viewGroup: { cluster, fields, context in
+                let (groups, fabric, endpoint) = try await scope(cluster, context)
+                let id = try group(fields)
+                let name = id == 0 ? nil : await groups.name(of: id, endpoint: endpoint, fabric: fabric)
+                return .response(C.viewGroupResponse, .structure([
+                    .field(0, .unsigned(UInt64((id == 0 ? IMStatus.constraintError : name == nil ? .notFound : .success).rawValue))),
+                    .field(1, .unsigned(UInt64(id))), .field(2, .utf8(name ?? "")),
                 ]))
             },
-            C.getGroupMembership: { _, _, _ in
-                .response(C.getGroupMembershipResponse, .structure([.field(0, .null), .field(1, .array([]))]))
+            C.getGroupMembership: { cluster, fields, context in
+                let (groups, fabric, endpoint) = try await scope(cluster, context)
+                let asked = Set((fields[0]?.elements ?? []).compactMap { $0.value.uint.flatMap(GroupID.init(exactly:)) })
+                let member = await groups.groups(of: endpoint, fabric: fabric).filter { asked.isEmpty || asked.contains($0) }
+                return .response(C.getGroupMembershipResponse, .structure([
+                    .field(0, .unsigned(UInt64(min(max(await groups.remainingCapacity, 0), 0xFE)))),
+                    .field(1, .array(member.map { TLVElement(.unsigned(UInt64($0))) })),
+                ]))
             },
-            C.removeGroup: { _, fields, _ in status(C.removeGroupResponse, .notFound, fields) },
-            C.removeAllGroups: { _, _, _ in .success },
+            C.removeGroup: { cluster, fields, context in
+                let (groups, fabric, endpoint) = try await scope(cluster, context)
+                let id = try group(fields)
+                return status(C.removeGroupResponse, await groups.remove(id, endpoint: endpoint, fabric: fabric), id)
+            },
+            C.removeAllGroups: { cluster, _, context in
+                let (groups, fabric, endpoint) = try await scope(cluster, context)
+                await groups.removeAll(endpoint: endpoint, fabric: fabric)
+                return .success
+            },
         ])
         return cluster
     }

@@ -100,9 +100,16 @@ public struct AccessControlEntry: Hashable, Sendable {
 
     /// Whether the entry grants its privilege to a session for a target (Core §6.6.5.2).
     func grants(_ session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Bool {
-        guard session.fabricIndex == fabricIndex, session.kind == .case, authMode == .case else { return false }
-        if let subjects {
-            guard subjects.contains(where: { Self.subject($0, matches: session) }) else { return false }
+        guard session.fabricIndex == fabricIndex else { return false }
+        switch (session.kind, authMode) {
+        case (.case, .case):
+            if let subjects, !subjects.contains(where: { Self.subject($0, matches: session) }) { return false }
+        case (.group, .group):
+            // A group entry's subjects are group ids (Core §6.6.2.1.2).
+            guard let group = session.groupID else { return false }
+            if let subjects, !subjects.contains(UInt64(group)) { return false }
+        default:
+            return false
         }
         if let targets {
             return targets.contains { target in

@@ -74,6 +74,8 @@ public actor MatterNode {
     public nonisolated let layer: MessageLayer
     public nonisolated let interactionServer: InteractionServer
     public nonisolated let setupPayload: SetupPayload
+    /// Group keys, the GroupKeyMap and memberships (Core §4.16, §4.17).
+    public nonisolated let groups: Groups
     let advertiser: (any NodeAdvertiser)?
     let logger: Logger
     private let verifier: PASEVerifier
@@ -98,6 +100,7 @@ public actor MatterNode {
 
         fabrics = await FabricTable(storage: storage)
         accessControl = await AccessControlEntries(storage: storage)
+        groups = await Groups(storage: storage, fabrics: fabrics)
         commissioning = Commissioning(fabrics: fabrics, accessControl: accessControl, attestation: attestation, logger: logger)
         var parameters = SessionParameters.default
         if configuration.tcp { parameters.supportedTransports = .tcpServer }
@@ -109,7 +112,8 @@ public actor MatterNode {
         interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl)
 
         let root = await RootClusters.make(information: information, commissioning: commissioning, fabrics: fabrics,
-                                           accessControl: accessControl, attestation: attestation, startTime: .now, storage: storage)
+                                           accessControl: accessControl, attestation: attestation, startTime: .now, storage: storage,
+                                           groups: groups)
         try await dataModel.add(Endpoint(number: 0, deviceTypes: [DeviceTypes.rootNode], clusters: root))
     }
 
@@ -123,8 +127,14 @@ public actor MatterNode {
         let resumptions = ResumptionStore()
         try await layer.register(SecureChannelServer(pase: pase, caseResponder: CASEServer(fabrics: fabrics, resumptions: resumptions)),
                                  for: .secureChannel)
+        await layer.setGroups(groups)
+        await interactionServer.setGroups(groups)
         try await interactionServer.serve(on: layer)
         try await layer.start()
+        // The node listens on its groups' multicast addresses (Core §4.16.3).
+        let transport = layer.transport
+        await groups.onMulticastChange { await transport.setMulticastGroups($0) }
+        await transport.setMulticastGroups(await groups.multicastAddresses)
 
         // Advertising follows the window and the fabrics.
         let advertiser = advertiser
@@ -145,8 +155,10 @@ public actor MatterNode {
         await fabrics.onChange { await advertise($0) }
         let layer = layer, fabrics = fabrics, verifier = verifier
         let discriminator = setupPayload.discriminator, timeout = configuration.initialWindowTimeout
+        let groups = groups
         await commissioning.onFabricRemoved { index, delay in
             await resumptions.removeFabric(index)
+            await groups.removeFabric(index)
             Task {
                 if delay > .zero { try? await Task.sleep(for: delay) }
                 await layer.removeSessions { $0.fabricIndex == index }
@@ -186,7 +198,10 @@ public actor MatterNode {
     // MARK: - Endpoints
 
     public func add(_ endpoint: Endpoint) async throws { try await dataModel.add(endpoint) }
-    public func remove(endpoint: EndpointNumber) async throws { try await dataModel.remove(endpoint) }
+    public func remove(endpoint: EndpointNumber) async throws {
+        try await dataModel.remove(endpoint)
+        await groups.removeEndpoint(endpoint)
+    }
 
     // MARK: - Identity
 

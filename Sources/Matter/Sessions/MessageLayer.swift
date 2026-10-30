@@ -43,6 +43,8 @@ public actor MessageLayer {
     enum SessionRef: Hashable {
         case unsecured(UnsecuredKey)
         case secure(UInt16)
+        /// A group message's context: nothing is sent back on it (Core §4.16).
+        case group(fabric: FabricIndex, group: GroupID, source: NodeID)
     }
 
     struct ExchangeKey: Hashable {
@@ -85,6 +87,8 @@ public actor MessageLayer {
     private var nextHandlerTask: UInt64 = 0
     private var nextExchangeID = UInt16.random(in: 0...UInt16.max)
     private var sessionCloseObservers: [@Sendable (SessionInfo) async -> Void] = []
+    /// The node's groups, to receive group messages; without them group messages are dropped.
+    private var groups: Groups?
 
     public init(transport: any MatterTransport, parameters: SessionParameters = .default,
                 reliability: ReliabilityParameters = .init(), logger: Logger = Logger(label: "matter.messages")) {
@@ -129,6 +133,8 @@ public actor MessageLayer {
         guard handlers[protocolID] == nil else { throw ExchangeError.handlerAlreadyRegistered }
         handlers[protocolID] = handler
     }
+
+    public func setGroups(_ groups: Groups) { self.groups = groups }
 
     public func onSessionClosed(_ observer: @escaping @Sendable (SessionInfo) async -> Void) {
         sessionCloseObservers.append(observer)
@@ -228,6 +234,8 @@ public actor MessageLayer {
     /// Sends a message on an exchange; reliable unless it is a standalone acknowledgement. Over TCP the connection is
     /// reliable, so MRP stays off: no R flag, no retransmission (Core §4.15).
     func send(on key: ExchangeKey, protocolID: ProtocolID, opcode: UInt8, payload: [UInt8], reliable requested: Bool = true) async throws {
+        // Group messages are not answered (Core §8.2.3): what a handler sends on one goes nowhere.
+        if case .group = key.session { return }
         let reliable = requested && !(peer(of: key.session)?.isStream ?? false)
         guard var state = exchanges[key], !state.closed else { throw ExchangeError.closed }
         // One reliable message in flight per exchange (Core §4.12.5.1).
@@ -265,13 +273,14 @@ public actor MessageLayer {
         switch session {
         case .secure(let id): secureSessions[id]?.info.peerAddress
         case .unsecured(let key): key.peer
+        case .group: nil
         }
     }
 
     private func retryInterval(for session: SessionRef) -> Duration {
         switch session {
         case .secure(let id): secureSessions[id]?.peerParameters.activeInterval ?? parameters.activeInterval
-        case .unsecured: SessionParameters.default.activeInterval
+        case .unsecured, .group: SessionParameters.default.activeInterval
         }
     }
 
@@ -357,6 +366,8 @@ public actor MessageLayer {
             let frame = try Message(header: header, payloadHeader: payloadHeader, payload: payload)
                 .sealedFrame(key: secure.encryptor, nonceSourceNodeID: secure.localNonceNodeID)
             return (frame, counter, secure.info.peerAddress)
+        case .group:
+            throw ExchangeError.closed
         }
     }
 
@@ -365,7 +376,7 @@ public actor MessageLayer {
     func receive(_ bytes: [UInt8], from peer: PeerAddress) async {
         do {
             let (header, headerLength) = try MessageHeader.decode(bytes)
-            guard header.sessionType == .unicast else { return } // Group messages are not supported.
+            if header.sessionType == .group { return await receiveGroup(bytes, sessionID: header.sessionID, from: peer) }
             guard !header.privacy else { throw MessageError.privacyUnsupported }
 
             let session: SessionRef
@@ -435,22 +446,53 @@ public actor MessageLayer {
             let info: SessionInfo = switch session {
             case .secure(let id): secureSessions[id]!.info
             case .unsecured(let unsecuredKey): unsecuredInfo(unsecuredKey.peer)
+            case .group: preconditionFailure("group messages are dispatched by receiveGroup")
             }
-            let exchange = makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID)
             noteReceived(message, key: key)
-            nextHandlerTask += 1
-            let taskID = nextHandlerTask
-            handlerTasks[taskID] = Task { [weak self] in
-                await handler.handle(exchange, first: message)
-                await self?.close(key)
-                await self?.handlerFinished(taskID)
-            }
+            start(handler, on: makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID), first: message)
             return
         }
 
         noteReceived(message, key: key)
         guard !isStandaloneAck, let state = exchanges[key], !state.closed else { return }
         await state.exchange.deliver(message)
+    }
+
+    private func start(_ handler: any ProtocolHandler, on exchange: Exchange, first message: Message) {
+        nextHandlerTask += 1
+        let taskID = nextHandlerTask
+        let key = exchange.key
+        handlerTasks[taskID] = Task { [weak self] in
+            await handler.handle(exchange, first: message)
+            await self?.close(key)
+            await self?.handlerFinished(taskID)
+        }
+    }
+
+    /// A group message (Core §4.16.3): each operational key its session id points to is tried, privacy removed
+    /// first, until one authenticates it for a group mapped to that key; its counter is checked trust-first.
+    private func receiveGroup(_ bytes: [UInt8], sessionID: UInt16, from peer: PeerAddress) async {
+        guard let groups else { return }
+        for candidate in await groups.candidates(sessionID: sessionID) {
+            guard let (header, length) = try? MessageHeader.decode(bytes), let clear = try? header.privacy
+                    ? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy) : bytes,
+                  let (decoded, headerLength) = try? MessageHeader.decode(clear), headerLength == length,
+                  case .group(let group) = decoded.destination, let source = decoded.source,
+                  let message = try? Message.open(frame: clear, header: decoded, headerLength: headerLength, key: candidate.key,
+                                                  nonceSourceNodeID: source),
+                  candidate.groups.contains(group)
+            else { continue }
+            guard await groups.accept(decoded.counter, fabric: candidate.fabric, source: source, control: decoded.isControl) else { return }
+            // Control messages are MCSP's, which a trust-first node does not run (Core §4.18).
+            let payloadHeader = message.payloadHeader
+            guard !decoded.isControl, payloadHeader.isInitiator, let handler = handlers[payloadHeader.protocolID] else { return }
+            let key = ExchangeKey(session: .group(fabric: candidate.fabric, group: group, source: source),
+                                  exchangeID: payloadHeader.exchangeID, isInitiator: false)
+            guard exchanges[key] == nil else { return }
+            let info = SessionInfo.group(group, fabric: candidate.fabric, source: source, sessionID: sessionID, peer: peer)
+            start(handler, on: makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID), first: message)
+            return
+        }
     }
 
     private func handlerFinished(_ id: UInt64) { handlerTasks[id] = nil }

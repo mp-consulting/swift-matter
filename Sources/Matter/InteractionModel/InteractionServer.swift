@@ -15,6 +15,10 @@ public actor InteractionServer: ProtocolHandler {
 
     public func setTimeScale(_ scale: Double) { timeScale = scale }
 
+    /// The node's groups: the Groups cluster's store, and where group messages go.
+    private var groups: Groups?
+    public func setGroups(_ groups: Groups) { self.groups = groups }
+
     public init(dataModel: DataModel, accessControl: any AccessController, payloadLimit: Int = 1024,
                 logger: Logger = Logger(label: "matter.im")) {
         self.dataModel = dataModel
@@ -38,6 +42,7 @@ public actor InteractionServer: ProtocolHandler {
     private func serve(_ exchange: Exchange, first message: Message) async {
         // Interactions run only over secure sessions (the message layer drops unencrypted ones).
         guard exchange.initialSession.isSecure else { return }
+        if exchange.initialSession.kind == .group { return await serveGroup(message, session: exchange.initialSession) }
         do {
             var message = message
             var timedDeadline: ContinuousClock.Instant?
@@ -64,6 +69,42 @@ public actor InteractionServer: ProtocolHandler {
             try? await exchange.sendIMStatus(status)
         } catch {
             logger.debug("Interaction with \(exchange.initialSession.peerAddress) failed: \(error)")
+        }
+    }
+
+    // MARK: - Groups
+
+    /// A group's write or invoke (Core §8.2.3): carried out on every endpoint of the group that has the cluster, with
+    /// the group's access, and never answered. Reads, subscriptions and timed interactions are not for groups.
+    private func serveGroup(_ message: Message, session: SessionInfo) async {
+        guard let groups, let group = session.groupID, let fabric = session.fabricIndex,
+              let fields = try? TLVStruct(decoding: message.payload), fields[1]?.bool != true else { return }
+        let members = await groups.endpoints(of: group, fabric: fabric)
+        let context = AccessContext(session: session, groups: groups)
+        @Sendable func targets(_ endpoint: EndpointNumber?) -> [EndpointNumber] {
+            endpoint.map { members.contains($0) ? [$0] : [] } ?? members
+        }
+        switch IMOpcode(rawValue: message.payloadHeader.opcode) {
+        case .invokeRequest:
+            for request in (try? fields.elements(2)) ?? [] {
+                guard let pathValue = request.value[0], let path = try? CommandPath(tlv: pathValue) else { continue }
+                for endpoint in targets(path.endpoint) where await dataModel.cluster(path.cluster, on: endpoint) != nil {
+                    var concrete = path
+                    concrete.endpoint = endpoint
+                    _ = await invoke(concrete, fields: request.value[1] ?? .structure([]), context: context)
+                }
+            }
+        case .writeRequest:
+            for element in (try? fields.elements(2)) ?? [] {
+                guard let pathValue = element.value[1], let value = element.value[2], let path = try? AttributePath(tlv: pathValue) else { continue }
+                for endpoint in targets(path.endpoint) where await dataModel.cluster(path.cluster ?? 0, on: endpoint) != nil {
+                    var concrete = path
+                    concrete.endpoint = endpoint
+                    _ = await write(concrete, value: value, dataVersion: nil, context: context)
+                }
+            }
+        default:
+            break
         }
     }
 
@@ -115,7 +156,7 @@ public actor InteractionServer: ProtocolHandler {
     func attributeReports(_ paths: [AttributePath], session: SessionInfo, fabricFiltered: Bool,
                           filters: [DataVersionFilter] = [], only: Set<ConcreteAttribute>? = nil) async -> [AttributeReport] {
         var reports: [AttributeReport] = []
-        let context = AccessContext(session: session, isFabricFiltered: fabricFiltered)
+        let context = AccessContext(session: session, isFabricFiltered: fabricFiltered, groups: groups)
         var seen = Set<ConcreteAttribute>()
 
         func filtered(_ endpoint: EndpointNumber, _ cluster: ClusterID, _ version: UInt32) -> Bool {
@@ -280,7 +321,7 @@ public actor InteractionServer: ProtocolHandler {
             try checkTimed(fields.bool(1), deadline: isFirstChunk ? timedDeadline : nil, timed: timedDeadline != nil)
             isFirstChunk = false
             let session = await exchange.session
-            let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange)
+            let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange, groups: groups)
             var statuses: [TLVElement] = []
             for element in try fields.elements(2) {
                 let data = try TLVStruct(element.value)
@@ -345,7 +386,7 @@ public actor InteractionServer: ProtocolHandler {
         let requests = try fields.elements(2)
         guard !requests.isEmpty else { throw StatusError(.invalidAction) }
         let session = await exchange.session
-        let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange)
+        let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange, groups: groups)
         var responses: [TLVElement] = []
         for request in requests {
             let data = try TLVStruct(request.value)

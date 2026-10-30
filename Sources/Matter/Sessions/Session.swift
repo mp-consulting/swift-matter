@@ -83,7 +83,12 @@ public struct SessionInfo: Hashable, Sendable {
         case unsecured
         case pase
         case `case`
+        /// A group message's context (Core §4.16.1): no session to answer on.
+        case group
     }
+
+    /// The group a group message was sent to.
+    public var groupID: GroupID?
 
     public var kind: Kind
     public var localSessionID: UInt16
@@ -99,6 +104,14 @@ public struct SessionInfo: Hashable, Sendable {
     public var peerAddress: PeerAddress
 
     public var isSecure: Bool { kind != .unsecured }
+
+    /// The context of a group message from `source` (Core §4.16.1).
+    public static func group(_ group: GroupID, fabric: FabricIndex, source: NodeID, sessionID: UInt16, peer: PeerAddress) -> SessionInfo {
+        var info = SessionInfo(kind: .group, localSessionID: sessionID, peerSessionID: sessionID, fabricIndex: fabric, peerNodeID: source,
+                               peerAddress: peer)
+        info.groupID = group
+        return info
+    }
 
     public init(kind: Kind, localSessionID: UInt16, peerSessionID: UInt16, fabricIndex: UInt8? = nil, peerNodeID: UInt64 = 0,
                 localNodeID: UInt64 = 0, caseAuthenticatedTags: [UInt32] = [], attestationChallenge: [UInt8] = [],

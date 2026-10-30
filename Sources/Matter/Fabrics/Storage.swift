@@ -65,4 +65,5 @@ public enum StorageKey {
     public static let uniqueID = "unique-id"
     public static let basicInformation = "basic-information"
     public static let bridgeEndpoints = "bridge-endpoints"
+    public static let groups = "groups"
 }
