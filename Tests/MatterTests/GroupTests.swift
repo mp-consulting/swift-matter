@@ -138,6 +138,14 @@ struct GroupTests {
         ]))])
         guard case .status(let status) = short else { Issue.record("no status"); return }
         #expect(status.status == .constraintError)
+        // A start time without its key, even in a later slot, is malformed.
+        let orphan = try await fixture.invoke(0, GroupKeyManagementCluster.id, GroupKeyManagementCluster.Command.keySetWrite, [.field(0, .structure([
+            .field(S.groupKeySetId, .unsigned(2)), .field(S.groupKeySecurityPolicy, .unsigned(0)),
+            .field(S.epochKey0, .bytes(epochKey)), .field(S.epochStartTime0, .unsigned(1)),
+            .field(S.epochKey1, .null), .field(S.epochStartTime1, .unsigned(5)),
+        ]))])
+        guard case .status(let orphanStatus) = orphan else { Issue.record("no status"); return }
+        #expect(orphanStatus.status == .invalidCommand)
     }
 
     @Test func persistsGroups() async throws {

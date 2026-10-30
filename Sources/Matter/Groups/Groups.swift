@@ -12,16 +12,18 @@ public actor Groups {
     public static let maxGroupsPerFabric = 16
     public static let maxKeySetsPerFabric = 3
 
-    struct OperationalKey: Hashable {
+    /// An operational group key with what receiving needs, prepared once rather than per message.
+    struct OperationalKey {
         let key: [UInt8]
         let startTime: UInt64
         /// Derived from the key (Core §4.17.3.6): where a received message's session id points.
         let sessionID: UInt16
+        let encryption: AESCCM
+        let privacy: AESCCM
     }
 
+    /// A key set's operational keys; its policy is always trust-first (the only one this node supports).
     struct KeySet {
-        let id: UInt16
-        let policy: UInt8
         let keys: [OperationalKey]
     }
 
@@ -80,26 +82,26 @@ public actor Groups {
         let policy = try fields.uint(S.groupKeySecurityPolicy, as: UInt8.self)
         // Only trust-first: CacheAndSync is not in the FeatureMap (Core §11.2.5.4).
         guard id != 0, policy == 0 else { throw StatusError(.invalidCommand) }
+        // The three slots, key and start time each, null or absent alike; empty slots may only trail.
+        func present(_ tag: UInt8) -> TLVValue? { fields[tag].flatMap { $0 == .null ? nil : $0 } }
+        var slots = [(S.epochKey0, S.epochStartTime0), (S.epochKey1, S.epochStartTime1), (S.epochKey2, S.epochStartTime2)]
+            .map { (key: present($0.0), start: present($0.1)) }
+        while let last = slots.last, last.key == nil, last.start == nil { slots.removeLast() }
+        guard !slots.isEmpty else { throw StatusError(.invalidCommand) }
         var epochs: [(key: [UInt8], start: UInt64)] = []
-        for (keyTag, startTag) in [(S.epochKey0, S.epochStartTime0), (S.epochKey1, S.epochStartTime1), (S.epochKey2, S.epochStartTime2)] {
-            let key = fields[keyTag].flatMap { $0 == .null ? nil : $0 }, start = fields[startTag].flatMap { $0 == .null ? nil : $0 }
-            if key == nil, start == nil { break }
-            guard let key = key?.bytes, let start = start?.uint else { throw StatusError(.invalidCommand) }
+        for slot in slots {
+            guard let key = slot.key?.bytes, let start = slot.start?.uint else { throw StatusError(.invalidCommand) }
             guard key.count == 16 else { throw StatusError(.constraintError) }
             // A later slot starts later; the first never at 0 from a client.
             guard start > (epochs.last?.start ?? 0) else { throw StatusError(.invalidCommand) }
             epochs.append((key, start))
         }
-        guard !epochs.isEmpty else { throw StatusError(.invalidCommand) }
-        // A slot after an empty one is malformed too.
-        let filled = [S.epochKey0, S.epochKey1, S.epochKey2].filter { fields[$0].map { $0 != .null } ?? false }.count
-        guard filled == epochs.count else { throw StatusError(.invalidCommand) }
         guard let compressed = await fabricTable.fabric(fabric)?.compressedFabricID else { throw StatusError(.unsupportedAccess) }
 
         var state = fabrics[fabric] ?? FabricGroups()
         guard state.keySets[id] != nil || state.keySets.count < Self.maxKeySetsPerFabric else { throw StatusError(.resourceExhausted) }
-        state.keySets[id] = KeySet(id: id, policy: policy, keys: epochs.map { epoch in
-            Self.operationalKey(Fabric.operationalGroupKey(epochKey: epoch.key, compressedFabricID: compressed), startTime: epoch.start)
+        state.keySets[id] = KeySet(keys: try epochs.map { epoch in
+            try Self.operationalKey(Fabric.operationalGroupKey(epochKey: epoch.key, compressedFabricID: compressed), startTime: epoch.start)
         })
         fabrics[fabric] = state
         try await save()
@@ -110,7 +112,8 @@ public actor Groups {
         typealias S = GroupKeyManagementCluster.GroupKeySetStruct
         guard let set = fabrics[fabric]?.keySets[id] else { return nil }
         let starts = [S.epochStartTime0, S.epochStartTime1, S.epochStartTime2]
-        var fields: [TLVElement] = [.field(S.groupKeySetId, .unsigned(UInt64(id))), .field(S.groupKeySecurityPolicy, .unsigned(UInt64(set.policy)))]
+        var fields: [TLVElement] = [.field(S.groupKeySetId, .unsigned(UInt64(id))),
+                                    .field(S.groupKeySecurityPolicy, .unsigned(GroupKeyManagementCluster.GroupKeySecurityPolicyEnum.trustFirst))]
         for (slot, (keyTag, startTag)) in zip([S.epochKey0, S.epochKey1, S.epochKey2], starts).enumerated() {
             fields.append(.field(keyTag, .null))
             fields.append(.field(startTag, set.keys.indices.contains(slot) ? .unsigned(set.keys[slot].startTime) : .null))
@@ -161,9 +164,9 @@ public actor Groups {
     var groupTable: TLVValue {
         typealias S = GroupKeyManagementCluster.GroupInfoMapStruct
         return .array(fabrics.keys.sorted().flatMap { fabric in
-            fabrics[fabric]!.memberships.sorted { $0.key < $1.key }.compactMap { group, membership -> TLVElement? in
-                guard !membership.endpoints.isEmpty else { return nil }
-                return TLVElement(.structure([
+            // Empty memberships are never kept, so every group listed has endpoints.
+            fabrics[fabric]!.memberships.sorted { $0.key < $1.key }.map { group, membership in
+                TLVElement(.structure([
                     .field(S.groupId, .unsigned(UInt64(group))),
                     .field(S.endpoints, .array(membership.endpoints.sorted().map { TLVElement(.unsigned(UInt64($0))) })),
                     .field(S.groupName, .utf8(membership.name)),
@@ -178,12 +181,13 @@ public actor Groups {
     /// AddGroup: the group needs key material, and room (Application Clusters §1.3.7.1).
     func add(_ group: GroupID, name: String, endpoint: EndpointNumber, fabric: FabricIndex) async -> IMStatus {
         guard group != 0, name.utf8.count <= 16 else { return .constraintError }
-        guard let entry = fabrics[fabric]?.keyMap.first(where: { $0.group == group }), fabrics[fabric]?.keySets[entry.keySet] != nil
+        guard var state = fabrics[fabric], let entry = state.keyMap.first(where: { $0.group == group }), state.keySets[entry.keySet] != nil
         else { return .unsupportedAccess }
-        var state = fabrics[fabric] ?? FabricGroups()
         if state.memberships[group] == nil, state.memberships.count >= Self.maxGroupsPerFabric { return .resourceExhausted }
-        state.memberships[group, default: Membership(name: name, endpoints: [])].endpoints.insert(endpoint)
-        state.memberships[group]?.name = name
+        var membership = state.memberships[group] ?? Membership(name: name, endpoints: [])
+        membership.name = name
+        membership.endpoints.insert(endpoint)
+        state.memberships[group] = membership
         fabrics[fabric] = state
         return await membershipChanged()
     }
@@ -198,9 +202,7 @@ public actor Groups {
     }
 
     var remainingCapacity: Int {
-        get async {
-            fabrics.values.map { Self.maxGroupsPerFabric - $0.memberships.count }.min() ?? Self.maxGroupsPerFabric
-        }
+        fabrics.values.map { Self.maxGroupsPerFabric - $0.memberships.count }.min() ?? Self.maxGroupsPerFabric
     }
 
     func remove(_ group: GroupID, endpoint: EndpointNumber, fabric: FabricIndex) async -> IMStatus {
@@ -211,13 +213,20 @@ public actor Groups {
     }
 
     func removeAll(endpoint: EndpointNumber, fabric: FabricIndex) async {
-        guard var state = fabrics[fabric] else { return }
-        for group in state.memberships.keys {
-            state.memberships[group]?.endpoints.remove(endpoint)
-            if state.memberships[group]?.endpoints.isEmpty == true { state.memberships[group] = nil }
+        if leave(endpoint, fabric: fabric) { _ = await membershipChanged() }
+    }
+
+    /// Takes an endpoint out of a fabric's groups, dropping groups left empty; says whether anything changed.
+    private func leave(_ endpoint: EndpointNumber, fabric: FabricIndex) -> Bool {
+        guard let memberships = fabrics[fabric]?.memberships else { return false }
+        let remaining = memberships.compactMapValues { membership -> Membership? in
+            var membership = membership
+            membership.endpoints.remove(endpoint)
+            return membership.endpoints.isEmpty ? nil : membership
         }
-        fabrics[fabric] = state
-        _ = await membershipChanged()
+        guard remaining != memberships else { return false }
+        fabrics[fabric]?.memberships = remaining
+        return true
     }
 
     /// The endpoints a group message is for.
@@ -234,7 +243,8 @@ public actor Groups {
 
     /// The node leaves an endpoint: its memberships go (a bridged device removed).
     public func removeEndpoint(_ endpoint: EndpointNumber) async {
-        for fabric in fabrics.keys { await removeAll(endpoint: endpoint, fabric: fabric) }
+        let changed = fabrics.keys.map { leave(endpoint, fabric: $0) }.contains(true)
+        if changed { _ = await membershipChanged() }
     }
 
     private func membershipChanged() async -> IMStatus {
@@ -263,14 +273,12 @@ public actor Groups {
     /// The operational keys a message's group session id may point to, with their privacy keys.
     func candidates(sessionID: UInt16) -> [Candidate] {
         fabrics.flatMap { fabric, state in
-            state.keySets.values.flatMap { set -> [Candidate] in
-                let groups = Set(state.keyMap.filter { $0.keySet == set.id }.map(\.group))
+            state.keySets.flatMap { id, set -> [Candidate] in
+                let keys = set.keys.filter { $0.sessionID == sessionID }
+                guard !keys.isEmpty else { return [] }
+                let groups = Set(state.keyMap.filter { $0.keySet == id }.map(\.group))
                 guard !groups.isEmpty else { return [] }
-                return set.keys.filter { $0.sessionID == sessionID }.compactMap { key in
-                    guard let encryption = try? AESCCM(key: key.key),
-                          let privacy = try? AESCCM(key: MatterCrypto.privacyKey(encryptionKey: key.key)) else { return nil }
-                    return Candidate(fabric: fabric, key: encryption, privacy: privacy, groups: groups)
-                }
+                return keys.map { Candidate(fabric: fabric, key: $0.encryption, privacy: $0.privacy, groups: groups) }
             }
         }
     }
@@ -285,8 +293,9 @@ public actor Groups {
 
     // MARK: - Derivations
 
-    static func operationalKey(_ key: [UInt8], startTime: UInt64) -> OperationalKey {
-        OperationalKey(key: key, startTime: startTime, sessionID: groupSessionID(operationalKey: key))
+    static func operationalKey(_ key: [UInt8], startTime: UInt64) throws -> OperationalKey {
+        OperationalKey(key: key, startTime: startTime, sessionID: groupSessionID(operationalKey: key), encryption: try AESCCM(key: key),
+                       privacy: try AESCCM(key: MatterCrypto.privacyKey(encryptionKey: key)))
     }
 
     /// GroupSessionId: the KDF of the operational key with "GroupKeyHash", big-endian (Core §4.17.3.6).
@@ -318,9 +327,9 @@ public actor Groups {
         .array(fabrics.sorted { $0.key < $1.key }.filter { !$0.value.isEmpty }.map { fabric, state in
             TLVElement(.structure([
                 .field(1, .unsigned(UInt64(fabric))),
-                .field(2, .array(state.keySets.values.sorted { $0.id < $1.id }.map { set in
+                .field(2, .array(state.keySets.sorted { $0.key < $1.key }.map { id, set in
                     TLVElement(.structure([
-                        .field(1, .unsigned(UInt64(set.id))), .field(2, .unsigned(UInt64(set.policy))),
+                        .field(1, .unsigned(UInt64(id))),
                         .field(3, .array(set.keys.map { TLVElement(.structure([.field(1, .bytes($0.key)), .field(2, .unsigned($0.startTime))])) })),
                     ]))
                 })),
@@ -344,10 +353,9 @@ public actor Groups {
                 let setFields = try TLVStruct(set.value)
                 let keys = try setFields.elements(3).map { entry -> OperationalKey in
                     let keyFields = try TLVStruct(entry.value)
-                    return operationalKey(try keyFields.bytes(1), startTime: try keyFields.uint(2))
+                    return try operationalKey(try keyFields.bytes(1), startTime: try keyFields.uint(2))
                 }
-                let id = try setFields.uint(1, as: UInt16.self)
-                state.keySets[id] = KeySet(id: id, policy: try setFields.uint(2, as: UInt8.self), keys: keys)
+                state.keySets[try setFields.uint(1, as: UInt16.self)] = KeySet(keys: keys)
             }
             state.keyMap = try fields.elements(3).map { entry in
                 let entryFields = try TLVStruct(entry.value)

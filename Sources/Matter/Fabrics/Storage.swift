@@ -27,13 +27,16 @@ public actor FileStorage: MatterStorage {
                                                 attributes: [.posixPermissions: 0o700])
     }
 
-    private func url(_ key: String) -> URL {
-        // Keys are the node's own names; anything outside [A-Za-z0-9._-] is escaped so a key cannot leave the directory.
+    private func url(_ key: String) -> URL { directory.appendingPathComponent(Self.fileName(for: key)) }
+
+    /// A key's file name: anything outside [A-Za-z0-9._-] is escaped, and a leading dot too, so a key cannot leave the
+    /// directory. Other storages of the node's state use it to keep the same files.
+    public static func fileName(for key: String) -> String {
         let safe = key.unicodeScalars.map { scalar -> String in
             CharacterSet.alphanumerics.contains(scalar) && scalar.isASCII || "._-".unicodeScalars.contains(scalar)
                 ? String(scalar) : "%" + zeroPadded(scalar.value, width: 2, radix: 16)
         }.joined()
-        return directory.appendingPathComponent(safe.hasPrefix(".") ? "%2E" + safe.dropFirst() : safe)
+        return safe.hasPrefix(".") ? "%2E" + safe.dropFirst() : safe
     }
 
     public func value(for key: String) -> [UInt8]? {

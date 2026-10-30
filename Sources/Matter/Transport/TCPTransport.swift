@@ -11,10 +11,10 @@ public final class TCPTransport: MatterTransport {
     /// The largest message, without its length, taken from a peer; a longer one closes the connection (Core §4.15.2.3).
     public let maxMessageSize: Int
     private let group: EventLoopGroup
-    private let server = NIOLockedValueBox<Channel?>(nil)
     private let state = NIOLockedValueBox(State())
 
     private struct State {
+        var listener: Channel?
         var connections: [UInt64: Channel] = [:]
         var nextID: UInt64 = 1
         var inbox: DatagramInbox?
@@ -29,7 +29,7 @@ public final class TCPTransport: MatterTransport {
     }
 
     /// The bound port; differs from `port` when it was 0.
-    public var localPort: Int? { server.withLockedValue { $0?.localAddress?.port } }
+    public var localPort: Int? { state.withLockedValue { $0.listener?.localAddress?.port } }
 
     public func onDisconnect(_ handler: @escaping @Sendable (PeerAddress) async -> Void) async {
         state.withLockedValue { $0.disconnect = handler }
@@ -47,7 +47,7 @@ public final class TCPTransport: MatterTransport {
             }
             .bind(host: "::", port: port)
             .get()
-        server.withLockedValue { $0 = bound }
+        state.withLockedValue { $0.listener = bound }
     }
 
     /// Opens a connection to a TCP server; messages sent to the returned peer go over it.
@@ -104,11 +104,14 @@ public final class TCPTransport: MatterTransport {
     }
 
     public func close() async {
-        let (listener, connections) = (server.withLockedValue { value in defer { value = nil }; return value },
-                                       state.withLockedValue { state in defer { state.connections = [:] }; return Array(state.connections.values) })
+        let (listener, connections, inbox) = state.withLockedValue { state in
+            // Connection ids keep counting: a peer of an earlier connection never names a new one.
+            defer { state = State(nextID: state.nextID, disconnect: state.disconnect) }
+            return (state.listener, Array(state.connections.values), state.inbox)
+        }
         try? await listener?.close()
         for connection in connections { try? await connection.close() }
-        state.withLockedValue { state in state.inbox?.close(); state.inbox = nil }
+        inbox?.close()
     }
 
     private final class Inbound: ChannelInboundHandler, Sendable {

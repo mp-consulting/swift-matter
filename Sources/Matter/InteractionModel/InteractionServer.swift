@@ -16,14 +16,14 @@ public actor InteractionServer: ProtocolHandler {
     public func setTimeScale(_ scale: Double) { timeScale = scale }
 
     /// The node's groups: the Groups cluster's store, and where group messages go.
-    private var groups: Groups?
-    public func setGroups(_ groups: Groups) { self.groups = groups }
+    private let groups: Groups?
 
-    public init(dataModel: DataModel, accessControl: any AccessController, payloadLimit: Int = 1024,
+    public init(dataModel: DataModel, accessControl: any AccessController, payloadLimit: Int = 1024, groups: Groups? = nil,
                 logger: Logger = Logger(label: "matter.im")) {
         self.dataModel = dataModel
         self.accessControl = accessControl
         self.payloadLimit = payloadLimit
+        self.groups = groups
         self.logger = logger
     }
 
@@ -42,7 +42,6 @@ public actor InteractionServer: ProtocolHandler {
     private func serve(_ exchange: Exchange, first message: Message) async {
         // Interactions run only over secure sessions (the message layer drops unencrypted ones).
         guard exchange.initialSession.isSecure else { return }
-        if exchange.initialSession.kind == .group { return await serveGroup(message, session: exchange.initialSession) }
         do {
             var message = message
             var timedDeadline: ContinuousClock.Instant?
@@ -76,31 +75,33 @@ public actor InteractionServer: ProtocolHandler {
 
     /// A group's write or invoke (Core §8.2.3): carried out on every endpoint of the group that has the cluster, with
     /// the group's access, and never answered. Reads, subscriptions and timed interactions are not for groups.
+    public nonisolated func handleGroup(_ message: Message, session: SessionInfo) async {
+        await serveGroup(message, session: session)
+    }
+
     private func serveGroup(_ message: Message, session: SessionInfo) async {
         guard let groups, let group = session.groupID, let fabric = session.fabricIndex,
               let fields = try? TLVStruct(decoding: message.payload), fields[1]?.bool != true else { return }
         let members = await groups.endpoints(of: group, fabric: fabric)
         let context = AccessContext(session: session, groups: groups)
-        @Sendable func targets(_ endpoint: EndpointNumber?) -> [EndpointNumber] {
-            endpoint.map { members.contains($0) ? [$0] : [] } ?? members
-        }
+        /// A path's endpoint when it is a member, or every member: an endpoint without the cluster answers
+        /// `unsupportedCluster`, which a group ignores like any other status.
+        func targets(_ endpoint: EndpointNumber?) -> [EndpointNumber] { endpoint.map { members.contains($0) ? [$0] : [] } ?? members }
         switch IMOpcode(rawValue: message.payloadHeader.opcode) {
         case .invokeRequest:
             for request in (try? fields.elements(2)) ?? [] {
-                guard let pathValue = request.value[0], let path = try? CommandPath(tlv: pathValue) else { continue }
-                for endpoint in targets(path.endpoint) where await dataModel.cluster(path.cluster, on: endpoint) != nil {
-                    var concrete = path
-                    concrete.endpoint = endpoint
-                    _ = await invoke(concrete, fields: request.value[1] ?? .structure([]), context: context)
+                guard let pathValue = request.value[0], var path = try? CommandPath(tlv: pathValue) else { continue }
+                for endpoint in targets(path.endpoint) {
+                    path.endpoint = endpoint
+                    _ = await invoke(path, fields: request.value[1] ?? .structure([]), context: context)
                 }
             }
         case .writeRequest:
             for element in (try? fields.elements(2)) ?? [] {
-                guard let pathValue = element.value[1], let value = element.value[2], let path = try? AttributePath(tlv: pathValue) else { continue }
-                for endpoint in targets(path.endpoint) where await dataModel.cluster(path.cluster ?? 0, on: endpoint) != nil {
-                    var concrete = path
-                    concrete.endpoint = endpoint
-                    _ = await write(concrete, value: value, dataVersion: nil, context: context)
+                guard let pathValue = element.value[1], let value = element.value[2], var path = try? AttributePath(tlv: pathValue) else { continue }
+                for endpoint in targets(path.endpoint) {
+                    path.endpoint = endpoint
+                    _ = await write(path, value: value, dataVersion: nil, context: context)
                 }
             }
         default:

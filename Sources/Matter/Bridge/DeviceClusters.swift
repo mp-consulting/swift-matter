@@ -77,16 +77,19 @@ enum DeviceClusters {
         @Sendable func status(_ command: CommandID, _ status: IMStatus, _ group: GroupID) -> InvokeResult {
             .response(command, .structure([.field(0, .unsigned(UInt64(status.rawValue))), .field(1, .unsigned(UInt64(group)))]))
         }
-        @Sendable func add(_ cluster: AttributeCluster, _ fields: TLVValue, _ context: AccessContext) async throws -> IMStatus {
+        @Sendable func add(_ cluster: AttributeCluster, _ id: GroupID, _ fields: TLVValue, _ context: AccessContext) async throws -> IMStatus {
             let (groups, fabric, endpoint) = try await scope(cluster, context)
             guard let name = fields[1]?.string else { throw StatusError(.invalidCommand) }
-            return await groups.add(try group(fields), name: name, endpoint: endpoint, fabric: fabric)
+            return await groups.add(id, name: name, endpoint: endpoint, fabric: fabric)
         }
         await cluster.handle([
-            C.addGroup: { cluster, fields, context in status(C.addGroupResponse, try await add(cluster, fields, context), try group(fields)) },
+            C.addGroup: { cluster, fields, context in
+                let id = try group(fields)
+                return status(C.addGroupResponse, try await add(cluster, id, fields, context), id)
+            },
             C.addGroupIfIdentifying: { cluster, fields, context in
                 guard await identifying() else { return .success }
-                let added = try await add(cluster, fields, context)
+                let added = try await add(cluster, try group(fields), fields, context)
                 return added == .success ? .success : .status(StatusError(added))
             },
             C.viewGroup: { cluster, fields, context in
@@ -103,7 +106,7 @@ enum DeviceClusters {
                 let asked = Set((fields[0]?.elements ?? []).compactMap { $0.value.uint.flatMap(GroupID.init(exactly:)) })
                 let member = await groups.groups(of: endpoint, fabric: fabric).filter { asked.isEmpty || asked.contains($0) }
                 return .response(C.getGroupMembershipResponse, .structure([
-                    .field(0, .unsigned(UInt64(min(max(await groups.remainingCapacity, 0), 0xFE)))),
+                    .field(0, .unsigned(UInt64(min(await groups.remainingCapacity, 0xFE)))),
                     .field(1, .array(member.map { TLVElement(.unsigned(UInt64($0))) })),
                 ]))
             },

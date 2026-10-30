@@ -300,7 +300,7 @@ public actor BridgedDevice {
             let previous = await cluster.value(ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported)?[S.energy]?.int
             guard previous != Int64(milliwattHours) else { return }
             let measurement = TLVValue.structure([.field(S.energy, .signed(Int64(milliwattHours))),
-                                                  .field(S.endTimestamp, .unsigned(DeviceClusters.matterEpochSeconds()))])
+                                                  .field(S.endTimestamp, .unsigned(UInt64(MatterCertificate.matterSeconds(Date()))))])
             await cluster.set(ElectricalEnergyMeasurementCluster.Attribute.cumulativeEnergyImported, measurement)
             await cluster.emit(ElectricalEnergyMeasurementCluster.Event.cumulativeEnergyMeasured, data: .structure([.field(0, measurement)]))
         case .battery(let percent):

@@ -124,9 +124,4 @@ extension DeviceClusters {
         ])
         return [topology, power, energy]
     }
-
-    /// Seconds since the Matter epoch, 2000-01-01 UTC (Core §7.19.2.7).
-    static func matterEpochSeconds(_ date: Date = Date()) -> UInt64 {
-        UInt64(max(0, date.timeIntervalSince1970 - 946_684_800))
-    }
 }

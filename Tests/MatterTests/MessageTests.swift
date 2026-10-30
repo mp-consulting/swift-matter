@@ -104,11 +104,7 @@ struct Pair {
 
 extension ReliabilityParameters {
     /// MRP at a hundredth of its real timings.
-    static var fast: ReliabilityParameters {
-        var parameters = ReliabilityParameters()
-        parameters.timeScale = 0.01
-        return parameters
-    }
+    static var fast: ReliabilityParameters { ReliabilityParameters(timeScale: 0.01) }
 }
 
 actor Recorder<Value: Sendable> {

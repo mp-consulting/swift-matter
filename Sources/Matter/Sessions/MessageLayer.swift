@@ -5,6 +5,12 @@ import Logging
 public protocol ProtocolHandler: Sendable {
     /// Called for the first message of an exchange the peer initiated; the exchange is closed when this returns.
     func handle(_ exchange: Exchange, first message: Message) async
+    /// Called with an authenticated group message (Core §4.16): there is no exchange, and nothing is answered.
+    func handleGroup(_ message: Message, session: SessionInfo) async
+}
+
+extension ProtocolHandler {
+    public func handleGroup(_ message: Message, session: SessionInfo) async {}
 }
 
 public enum ExchangeError: Error, Equatable, Sendable {
@@ -26,7 +32,8 @@ public struct ReliabilityParameters: Sendable {
     /// Multiplies every timeout: tests run MRP with a small scale rather than waiting it out.
     public var timeScale = 1.0
 
-    public init() {}
+    /// MRP with its timings scaled: tests pass a small `timeScale` rather than waiting them out.
+    public init(timeScale: Double = 1.0) { self.timeScale = timeScale }
 
     func scaled(_ duration: Duration) -> Duration { duration * timeScale }
 }
@@ -43,8 +50,6 @@ public actor MessageLayer {
     enum SessionRef: Hashable {
         case unsecured(UnsecuredKey)
         case secure(UInt16)
-        /// A group message's context: nothing is sent back on it (Core §4.16).
-        case group(fabric: FabricIndex, group: GroupID, source: NodeID)
     }
 
     struct ExchangeKey: Hashable {
@@ -88,13 +93,14 @@ public actor MessageLayer {
     private var nextExchangeID = UInt16.random(in: 0...UInt16.max)
     private var sessionCloseObservers: [@Sendable (SessionInfo) async -> Void] = []
     /// The node's groups, to receive group messages; without them group messages are dropped.
-    private var groups: Groups?
+    private let groups: Groups?
 
-    public init(transport: any MatterTransport, parameters: SessionParameters = .default,
-                reliability: ReliabilityParameters = .init(), logger: Logger = Logger(label: "matter.messages")) {
+    public init(transport: any MatterTransport, parameters: SessionParameters = .default, reliability: ReliabilityParameters = .init(),
+                groups: Groups? = nil, logger: Logger = Logger(label: "matter.messages")) {
         self.transport = transport
         self.parameters = parameters
         self.reliability = reliability
+        self.groups = groups
         self.logger = logger
     }
 
@@ -133,8 +139,6 @@ public actor MessageLayer {
         guard handlers[protocolID] == nil else { throw ExchangeError.handlerAlreadyRegistered }
         handlers[protocolID] = handler
     }
-
-    public func setGroups(_ groups: Groups) { self.groups = groups }
 
     public func onSessionClosed(_ observer: @escaping @Sendable (SessionInfo) async -> Void) {
         sessionCloseObservers.append(observer)
@@ -225,17 +229,17 @@ public actor MessageLayer {
         return reliability.backoffMargin * pow(reliability.backoffBase, exponent) * (1 + jitter * reliability.backoffJitter)
     }
 
-    private func makeExchange(key: ExchangeKey, info: SessionInfo, protocolID: ProtocolID) -> Exchange {
+    /// A new exchange; one the peer opened records its first message's acknowledgement at once, so a reply carries it.
+    private func makeExchange(key: ExchangeKey, info: SessionInfo, protocolID: ProtocolID, first message: Message? = nil) -> Exchange {
         let exchange = Exchange(layer: self, key: key, session: info, protocolID: protocolID)
         exchanges[key] = ExchangeState(exchange: exchange)
+        if let message { noteReceived(message, key: key) }
         return exchange
     }
 
     /// Sends a message on an exchange; reliable unless it is a standalone acknowledgement. Over TCP the connection is
     /// reliable, so MRP stays off: no R flag, no retransmission (Core §4.15).
     func send(on key: ExchangeKey, protocolID: ProtocolID, opcode: UInt8, payload: [UInt8], reliable requested: Bool = true) async throws {
-        // Group messages are not answered (Core §8.2.3): what a handler sends on one goes nowhere.
-        if case .group = key.session { return }
         let reliable = requested && !(peer(of: key.session)?.isStream ?? false)
         guard var state = exchanges[key], !state.closed else { throw ExchangeError.closed }
         // One reliable message in flight per exchange (Core §4.12.5.1).
@@ -273,14 +277,13 @@ public actor MessageLayer {
         switch session {
         case .secure(let id): secureSessions[id]?.info.peerAddress
         case .unsecured(let key): key.peer
-        case .group: nil
         }
     }
 
     private func retryInterval(for session: SessionRef) -> Duration {
         switch session {
         case .secure(let id): secureSessions[id]?.peerParameters.activeInterval ?? parameters.activeInterval
-        case .unsecured, .group: SessionParameters.default.activeInterval
+        case .unsecured: SessionParameters.default.activeInterval
         }
     }
 
@@ -367,8 +370,6 @@ public actor MessageLayer {
             let frame = try Message(header: header, payloadHeader: payloadHeader, payload: payload)
                 .sealedFrame(key: secure.encryptor, nonceSourceNodeID: secure.localNonceNodeID)
             return (frame, counter, secure.info.peerAddress)
-        case .group:
-            throw ExchangeError.closed
         }
     }
 
@@ -377,7 +378,7 @@ public actor MessageLayer {
     func receive(_ bytes: [UInt8], from peer: PeerAddress) async {
         do {
             let (header, headerLength) = try MessageHeader.decode(bytes)
-            if header.sessionType == .group { return await receiveGroup(bytes, sessionID: header.sessionID, from: peer) }
+            if header.sessionType == .group { return await receiveGroup(bytes, header: header, headerLength: headerLength, from: peer) }
             guard !header.privacy else { throw MessageError.privacyUnsupported }
 
             let session: SessionRef
@@ -447,12 +448,8 @@ public actor MessageLayer {
             let info: SessionInfo = switch session {
             case .secure(let id): secureSessions[id]!.info
             case .unsecured(let unsecuredKey): unsecuredInfo(unsecuredKey.peer)
-            case .group: preconditionFailure("group messages are dispatched by receiveGroup")
             }
-            // The exchange first: noting the message records its acknowledgement on the exchange's state.
-            let exchange = makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID)
-            noteReceived(message, key: key)
-            start(handler, on: exchange, first: message)
+            start(handler, on: makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID, first: message), first: message)
             return
         }
 
@@ -462,24 +459,31 @@ public actor MessageLayer {
     }
 
     private func start(_ handler: any ProtocolHandler, on exchange: Exchange, first message: Message) {
-        nextHandlerTask += 1
-        let taskID = nextHandlerTask
         let key = exchange.key
-        handlerTasks[taskID] = Task { [weak self] in
+        track { [weak self] in
             await handler.handle(exchange, first: message)
             await self?.close(key)
+        }
+    }
+
+    /// Runs a handler's work as a task `stop` cancels.
+    private func track(_ work: @escaping @Sendable () async -> Void) {
+        nextHandlerTask += 1
+        let taskID = nextHandlerTask
+        handlerTasks[taskID] = Task { [weak self] in
+            await work()
             await self?.handlerFinished(taskID)
         }
     }
 
     /// A group message (Core §4.16.3): each operational key its session id points to is tried, privacy removed
     /// first, until one authenticates it for a group mapped to that key; its counter is checked trust-first.
-    private func receiveGroup(_ bytes: [UInt8], sessionID: UInt16, from peer: PeerAddress) async {
+    private func receiveGroup(_ bytes: [UInt8], header: MessageHeader, headerLength: Int, from peer: PeerAddress) async {
         guard let groups else { return }
-        for candidate in await groups.candidates(sessionID: sessionID) {
-            guard let (header, length) = try? MessageHeader.decode(bytes), let clear = try? header.privacy
-                    ? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy) : bytes,
-                  let (decoded, headerLength) = try? MessageHeader.decode(clear), headerLength == length,
+        for candidate in await groups.candidates(sessionID: header.sessionID) {
+            // The header's counter, source and group are readable only once the privacy is removed.
+            guard let clear = try? header.privacy ? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy) : bytes,
+                  let decoded = try? header.privacy ? MessageHeader.decode(clear).0 : header,
                   case .group(let group) = decoded.destination, let source = decoded.source,
                   let message = try? Message.open(frame: clear, header: decoded, headerLength: headerLength, key: candidate.key,
                                                   nonceSourceNodeID: source),
@@ -487,13 +491,9 @@ public actor MessageLayer {
             else { continue }
             guard await groups.accept(decoded.counter, fabric: candidate.fabric, source: source, control: decoded.isControl) else { return }
             // Control messages are MCSP's, which a trust-first node does not run (Core §4.18).
-            let payloadHeader = message.payloadHeader
-            guard !decoded.isControl, payloadHeader.isInitiator, let handler = handlers[payloadHeader.protocolID] else { return }
-            let key = ExchangeKey(session: .group(fabric: candidate.fabric, group: group, source: source),
-                                  exchangeID: payloadHeader.exchangeID, isInitiator: false)
-            guard exchanges[key] == nil else { return }
-            let info = SessionInfo.group(group, fabric: candidate.fabric, source: source, sessionID: sessionID, peer: peer)
-            start(handler, on: makeExchange(key: key, info: info, protocolID: payloadHeader.protocolID), first: message)
+            guard !decoded.isControl, message.payloadHeader.isInitiator, let handler = handlers[message.payloadHeader.protocolID] else { return }
+            let session = SessionInfo.group(group, fabric: candidate.fabric, source: source, sessionID: header.sessionID, peer: peer)
+            track { await handler.handleGroup(message, session: session) }
             return
         }
     }

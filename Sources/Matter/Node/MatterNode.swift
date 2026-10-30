@@ -107,9 +107,10 @@ public actor MatterNode {
         let defaultTransport: any MatterTransport = configuration.tcp
             ? CombinedTransport(datagrams: UDPTransport(port: configuration.port), streams: TCPTransport(port: configuration.port))
             : UDPTransport(port: configuration.port)
-        layer = MessageLayer(transport: transport ?? defaultTransport, parameters: parameters, reliability: configuration.reliability)
+        layer = MessageLayer(transport: transport ?? defaultTransport, parameters: parameters, reliability: configuration.reliability,
+                             groups: groups)
         dataModel = DataModel()
-        interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl)
+        interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl, groups: groups)
 
         let root = await RootClusters.make(information: information, commissioning: commissioning, fabrics: fabrics,
                                            accessControl: accessControl, attestation: attestation, startTime: .now, storage: storage,
@@ -127,8 +128,6 @@ public actor MatterNode {
         let resumptions = ResumptionStore()
         try await layer.register(SecureChannelServer(pase: pase, caseResponder: CASEServer(fabrics: fabrics, resumptions: resumptions)),
                                  for: .secureChannel)
-        await layer.setGroups(groups)
-        await interactionServer.setGroups(groups)
         try await interactionServer.serve(on: layer)
         try await layer.start()
         // The node listens on its groups' multicast addresses (Core §4.16.3).

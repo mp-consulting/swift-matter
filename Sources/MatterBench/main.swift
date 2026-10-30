@@ -61,8 +61,7 @@ func measure(_ runs: Int, _ body: () async throws -> Void) async throws -> [Doub
     for _ in 0..<runs {
         let start = ContinuousClock.now
         try await body()
-        let elapsed = ContinuousClock.now - start
-        times.append(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
+        times.append((ContinuousClock.now - start) / .milliseconds(1))
     }
     return times
 }
@@ -172,8 +171,7 @@ func run() async throws {
         }
         try await group.waitForAll()
     }
-    let parallelSeconds = Double((ContinuousClock.now - parallelStart).components.attoseconds) / 1e18
-        + Double((ContinuousClock.now - parallelStart).components.seconds)
+    let parallelSeconds = (ContinuousClock.now - parallelStart) / .seconds(1)
 
     print("""
         swift-matter benchmark: \(options.devices) bridged lights, \(options.iterations) iterations, UDP loopback, \(ProcessInfo.processInfo.operatingSystemVersionString)
