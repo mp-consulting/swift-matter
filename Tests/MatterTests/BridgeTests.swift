@@ -57,6 +57,33 @@ struct BridgeTests {
         #expect(try await fixture.read(2, BridgedDeviceBasicInformationCluster.id, BridgedDeviceBasicInformationCluster.Attribute.reachable) == .bool(false))
     }
 
+    @Test func makesANodeOneDevice() async throws {
+        let base = try await CommissioningFixture()
+        let commands = Recorder<DeviceCommand>()
+        let device = try await base.node.addDevice(BridgedDeviceInfo(id: "robot", name: "Pool robot"), parts: [
+            DevicePart(.onOffPlug) { await commands.append($0) }, DevicePart(.temperatureSensor),
+        ], battery: true)
+        let session = try await base.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42).localSessionID
+        func read(_ endpoint: EndpointNumber, _ cluster: ClusterID, _ attribute: AttributeID) async throws -> TLVValue {
+            try await base.commissioner.client.read(endpoint: endpoint, cluster: cluster, attribute: attribute, session: session)
+        }
+        #expect(device.partEndpoints == [1, 2])
+        // No Aggregator: the parts are the root's own.
+        #expect(try await read(0, DescriptorCluster.id, DescriptorCluster.Attribute.partsList) == .array([TLVElement(.unsigned(1)), TLVElement(.unsigned(2))]))
+        let types = try await read(1, DescriptorCluster.id, DescriptorCluster.Attribute.deviceTypeList)
+        #expect(types.elements?.compactMap { $0.value[0]?.uint } == [UInt64(DeviceTypes.onOffPlugInUnit.id), UInt64(DeviceTypes.powerSource.id)])
+
+        _ = try await base.commissioner.client.invoke(CommandPath(endpoint: 1, cluster: OnOffCluster.id, command: OnOffCluster.Command.on),
+                                                      fields: .structure([]), session: session)
+        #expect(await commands.values == [.setOn(true)])
+        await device.update(.temperature(27.5), part: 1)
+        #expect(try await read(2, TemperatureMeasurementCluster.id, 0) == .signed(2750))
+        await device.update(.battery(percent: 50))
+        #expect(try await read(1, PowerSourceCluster.id, PowerSourceCluster.Attribute.batPercentRemaining) == .unsigned(100))
+        // Nothing to say reachability with: no Bridged Device Basic Information.
+        await device.setReachable(false)
+    }
+
     @Test func reportsSensorValues() async throws {
         let fixture = try await Fixture()
         let temperature = try await fixture.bridge.add(BridgedDeviceInfo(id: "t", name: "Office"), kind: .temperatureSensor)

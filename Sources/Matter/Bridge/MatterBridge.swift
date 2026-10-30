@@ -196,7 +196,7 @@ public enum ButtonPress: Sendable {
     case long
 }
 
-/// A device on the bridge.
+/// A device on the bridge, or the device a node is (`MatterNode.addDevice`).
 public actor BridgedDevice {
     public nonisolated let info: BridgedDeviceInfo
     /// The Bridged Node endpoint.
@@ -204,11 +204,12 @@ public actor BridgedDevice {
     /// The endpoint of each part: the Bridged Node's own for a single part, children otherwise.
     public nonisolated let partEndpoints: [EndpointNumber]
     private let parts: [[any ClusterHandler]]
-    private let basicInformation: AttributeCluster
+    /// Bridged Device Basic Information; nil for a node's own device, which the node's Basic Information describes.
+    private let basicInformation: AttributeCluster?
     private let power: AttributeCluster?
 
     init(info: BridgedDeviceInfo, endpoint: EndpointNumber, partEndpoints: [EndpointNumber], parts: [[any ClusterHandler]],
-         basicInformation: AttributeCluster, power: AttributeCluster?) {
+         basicInformation: AttributeCluster?, power: AttributeCluster?) {
         self.info = info
         self.endpoint = endpoint
         self.partEndpoints = partEndpoints
@@ -348,15 +349,40 @@ public actor BridgedDevice {
         await cluster.set(SwitchCluster.Attribute.currentPosition, .unsigned(0))
     }
 
-    /// Whether the bridge can reach the device (Bridged Device Basic Information's Reachable, Core §9.13.5.1).
+    /// Whether the bridge can reach the device (Bridged Device Basic Information's Reachable, Core §9.13.5.1); a
+    /// node's own device has nothing to say it.
     public func setReachable(_ reachable: Bool) async {
-        guard await basicInformation.value(BridgedDeviceBasicInformationCluster.Attribute.reachable) != .bool(reachable) else { return }
+        guard let basicInformation, await basicInformation.value(BridgedDeviceBasicInformationCluster.Attribute.reachable) != .bool(reachable) else { return }
         await basicInformation.set(BridgedDeviceBasicInformationCluster.Attribute.reachable, .bool(reachable))
         await basicInformation.emit(BridgedDeviceBasicInformationCluster.Event.reachableChanged, data: .structure([.field(0, .bool(reachable))]))
     }
 
     public func setName(_ name: String) async {
-        await basicInformation.set(BridgedDeviceBasicInformationCluster.Attribute.nodeLabel, .utf8(name.utf8Prefix(32)))
+        await basicInformation?.set(BridgedDeviceBasicInformationCluster.Attribute.nodeLabel, .utf8(name.utf8Prefix(32)))
+    }
+}
+
+extension MatterNode {
+    /// Makes the node one device rather than a bridge (Core §9.2): each part on an endpoint of its own from
+    /// `firstEndpoint`, which the root's PartsList lists. The node's Basic Information (`NodeInformation`) names it;
+    /// `info` is kept for the caller. A battery's Power Source is on the first endpoint.
+    @discardableResult
+    public func addDevice(_ info: BridgedDeviceInfo, parts: [DevicePart], battery: Bool = false,
+                          firstEndpoint: EndpointNumber = 1) async throws -> BridgedDevice {
+        guard !parts.isEmpty else { throw BridgeError.noParts }
+        guard Int(firstEndpoint) + parts.count - 1 < Int(EndpointNumber.max) else { throw BridgeError.endpointsExhausted }
+        let endpoints = parts.indices.map { firstEndpoint + EndpointNumber($0) }
+        var partClusters: [[any ClusterHandler]] = []
+        for part in parts { partClusters.append(await part.kind.makeClusters(part.handler)) }
+        let power = battery ? DeviceClusters.battery(endpoints: endpoints) : nil
+        for (index, part) in parts.enumerated() {
+            let first = index == 0
+            try await add(Endpoint(number: endpoints[index],
+                                   deviceTypes: part.kind.deviceTypes + (first && battery ? [DeviceTypes.powerSource] : []),
+                                   clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.tags))
+        }
+        return BridgedDevice(info: info, endpoint: firstEndpoint, partEndpoints: endpoints, parts: partClusters,
+                             basicInformation: nil, power: power)
     }
 }
 
