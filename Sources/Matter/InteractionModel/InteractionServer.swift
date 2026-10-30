@@ -135,6 +135,11 @@ public actor InteractionServer: ProtocolHandler {
         return await accessControl.privilege(of: session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes)
     }
 
+    /// Why a session was refused: whom the ACL saw (node, CATs, fabric) and the privileges held and needed.
+    private func logDenial(_ path: String, _ session: SessionInfo, held: Privilege?, required: Privilege) {
+        logger.debug("Denied \(path) to \(session.kind) node \(zeroPadded(session.peerNodeID, width: 16, radix: 16)) on fabric \(session.fabricIndex ?? 0), CATs [\(session.caseAuthenticatedTags.map { zeroPadded($0, width: 8, radix: 16) }.joined(separator: ", "))]: holds \(held.map { "\($0)" } ?? "nothing"), needs \(required)")
+    }
+
     private func allowed(_ session: SessionInfo, _ endpoint: EndpointNumber, _ cluster: ClusterID, _ required: Privilege) async -> Bool {
         await privilege(session, endpoint, cluster)?.grants(required) ?? false
     }
@@ -376,7 +381,11 @@ public actor InteractionServer: ProtocolHandler {
         guard let required = definition.write else {
             return StatusError(await allowed(context.session, endpoint, clusterID, definition.read) ? .unsupportedWrite : .unsupportedAccess)
         }
-        guard await allowed(context.session, endpoint, clusterID, required) else { return StatusError(.unsupportedAccess) }
+        let privilege = await privilege(context.session, endpoint, clusterID)
+        guard privilege?.grants(required) ?? false else {
+            logDenial("\(path)", context.session, held: privilege, required: required)
+            return StatusError(.unsupportedAccess)
+        }
         if definition.flags.contains(.timedWrite), !context.isTimed { return StatusError(.needsTimedInteraction) }
         if definition.flags.contains(.fabricScoped), context.fabricIndex == nil { return StatusError(.unsupportedAccess) }
         if let dataVersion, await cluster.dataVersion != dataVersion { return StatusError(.dataVersionMismatch) }
@@ -447,7 +456,10 @@ public actor InteractionServer: ProtocolHandler {
             return .status(StatusError(.unsupportedCommand))
         }
         let privilege = await privilege(context.session, endpoint, path.cluster)
-        guard privilege?.grants(definition.invoke) ?? false else { return .status(StatusError(.unsupportedAccess)) }
+        guard privilege?.grants(definition.invoke) ?? false else {
+            logDenial("\(path)", context.session, held: privilege, required: definition.invoke)
+            return .status(StatusError(.unsupportedAccess))
+        }
         if definition.fabricScoped, context.fabricIndex == nil { return .status(StatusError(.unsupportedAccess)) }
         if definition.timed, !context.isTimed { return .status(StatusError(.needsTimedInteraction)) }
         var context = context
