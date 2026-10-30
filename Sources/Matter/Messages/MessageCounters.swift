@@ -15,8 +15,10 @@ public struct MessageReceptionState: Sendable {
     public enum Policy: Sendable {
         /// Secure unicast sessions: counters only move forward; anything behind the window is a duplicate.
         case strict
-        /// Unsecured and group messages: counters behind the window mean the sender restarted, and are accepted.
+        /// Unsecured messages: counters roll over, and one behind the window means the sender restarted (Core §4.6.5.3).
         case rolling
+        /// Group messages: counters roll over, and one behind the window is a duplicate (Core §4.6.5.2).
+        case group
     }
 
     private(set) var maxCounter: UInt32?
@@ -65,7 +67,7 @@ public struct MessageReceptionState: Sendable {
                 return true
             }
             return markInWindow(offset: max - counter)
-        case .rolling:
+        case .rolling, .group:
             // Distances are modulo 2^32: ahead when within 2^31 above the maximum.
             let ahead = counter &- max
             if ahead != 0 && ahead < 1 << 31 {
@@ -76,7 +78,8 @@ public struct MessageReceptionState: Sendable {
             let behind = max &- counter
             if behind == 0 { return false }
             if behind <= MessageCounter.windowSize { return markInWindow(offset: behind) }
-            // Behind the window: the sender restarted; start over from this counter.
+            // Behind the window: a replay for a group key; for unsecured messages the sender restarted.
+            guard policy == .rolling else { return false }
             maxCounter = counter
             window = 0
             return true

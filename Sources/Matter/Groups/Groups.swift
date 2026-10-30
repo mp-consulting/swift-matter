@@ -319,14 +319,14 @@ public actor Groups {
         let key = PeerKey(fabric: fabric, source: source, control: control)
         if peers[key] == nil, cacheAndSync, !control { return .unsynchronized }
         // Trust-first: a first counter is accepted, and received.
-        var state = peers[key] ?? MessageReceptionState(policy: .rolling)
+        var state = peers[key] ?? MessageReceptionState(policy: .group)
         defer { peers[key] = state }
         return state.accept(counter) ? .new : .duplicate
     }
 
     /// The peer's data counter, learnt from a MsgCounterSyncRsp.
     func synchronize(fabric: FabricIndex, source: NodeID, counter: UInt32) {
-        peers[PeerKey(fabric: fabric, source: source, control: false)] = MessageReceptionState(policy: .rolling, learnt: counter)
+        peers[PeerKey(fabric: fabric, source: source, control: false)] = MessageReceptionState(policy: .group, learnt: counter)
     }
 
     /// The node's id on a fabric: the source of its MCSP messages.

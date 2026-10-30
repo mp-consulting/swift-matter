@@ -62,6 +62,15 @@ struct ReceptionStateTests {
             == [true, false, true, true, false, true, true, false, false])
     }
 
+    /// Group keys roll over too, but a counter behind the window is a replay, not a restart (Core §4.6.5.2).
+    @Test func groupWindowRefusesCountersBehindIt() {
+        #expect(accepted([1000, 1000, 999, 999, 968, 967, 10, 1001], by: MessageReceptionState(policy: .group))
+            == [true, false, true, false, true, false, false, true])
+        #expect(accepted([UInt32.max, 2], by: MessageReceptionState(policy: .group)) == [true, true])
+        // A learnt counter (MCSP) takes its maximum once, and what came within the window before it.
+        #expect(accepted([500, 500, 490, 400], by: MessageReceptionState(policy: .group, learnt: 500)) == [true, false, true, false])
+    }
+
     @Test func rollingWindowAcceptsARestartedSender() {
         // Far behind (10) means the sender restarted.
         #expect(accepted([1000, 1000, 999, 999, 10, 11], by: MessageReceptionState(policy: .rolling))
