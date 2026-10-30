@@ -80,8 +80,11 @@ struct BridgeTests {
         #expect(try await read(2, TemperatureMeasurementCluster.id, 0) == .signed(2750))
         await device.update(.battery(percent: 50))
         #expect(try await read(1, PowerSourceCluster.id, PowerSourceCluster.Attribute.batPercentRemaining) == .unsigned(100))
-        // Nothing to say reachability with: no Bridged Device Basic Information.
+        // The node's Basic Information says whether the device is reachable, and its name.
         await device.setReachable(false)
+        #expect(try await read(0, BasicInformationCluster.id, BasicInformationCluster.Attribute.reachable) == .bool(false))
+        await device.setName("Pool")
+        #expect(try await read(0, BasicInformationCluster.id, BasicInformationCluster.Attribute.nodeLabel) == .utf8("Pool"))
     }
 
     @Test func reportsSensorValues() async throws {

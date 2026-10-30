@@ -71,7 +71,7 @@ enum RootClusters {
             A.serialNumber: text(info.serialNumber), A.uniqueId: text(info.uniqueID),
             A.capabilityMinima: .structure([.field(Minima.caseSessionsPerFabric, .unsigned(3)), .field(Minima.subscriptionsPerFabric, .unsigned(3))]),
             A.specificationVersion: .unsigned(UInt64(SpecificationVersion.specificationVersion)),
-            A.maxPathsPerInvoke: .unsigned(1), A.configurationVersion: .unsigned(1),
+            A.maxPathsPerInvoke: .unsigned(1), A.configurationVersion: .unsigned(1), A.reachable: .bool(true),
         ])
         await cluster.onWrite { cluster, attribute, value, _ in
             guard let text = value.string else { throw StatusError(.constraintError) }

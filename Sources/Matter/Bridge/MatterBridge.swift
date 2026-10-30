@@ -204,7 +204,8 @@ public actor BridgedDevice {
     /// The endpoint of each part: the Bridged Node's own for a single part, children otherwise.
     public nonisolated let partEndpoints: [EndpointNumber]
     private let parts: [[any ClusterHandler]]
-    /// Bridged Device Basic Information; nil for a node's own device, which the node's Basic Information describes.
+    /// Bridged Device Basic Information, or the node's own Basic Information for a node that is the device: both have
+    /// NodeLabel, Reachable and ReachableChanged under the same ids.
     private let basicInformation: AttributeCluster?
     private let power: AttributeCluster?
 
@@ -349,8 +350,7 @@ public actor BridgedDevice {
         await cluster.set(SwitchCluster.Attribute.currentPosition, .unsigned(0))
     }
 
-    /// Whether the bridge can reach the device (Bridged Device Basic Information's Reachable, Core §9.13.5.1); a
-    /// node's own device has nothing to say it.
+    /// Whether the bridge can reach the device (Reachable, Core §9.13.5.1 and §11.1.5.18).
     public func setReachable(_ reachable: Bool) async {
         guard let basicInformation, await basicInformation.value(BridgedDeviceBasicInformationCluster.Attribute.reachable) != .bool(reachable) else { return }
         await basicInformation.set(BridgedDeviceBasicInformationCluster.Attribute.reachable, .bool(reachable))
@@ -364,8 +364,8 @@ public actor BridgedDevice {
 
 extension MatterNode {
     /// Makes the node one device rather than a bridge (Core §9.2): each part on an endpoint of its own from 1, which
-    /// the root's PartsList lists. The node's Basic Information (`NodeInformation`) names it; `info` is kept for the
-    /// caller. A battery's Power Source is on endpoint 1.
+    /// the root's PartsList lists. The node's Basic Information (`NodeInformation`) names it, and says whether it is
+    /// reachable; `info` is kept for the caller. A battery's Power Source is on endpoint 1.
     @discardableResult
     public func addDevice(_ info: BridgedDeviceInfo, parts: [DevicePart], battery: Bool = false) async throws -> BridgedDevice {
         guard !parts.isEmpty else { throw BridgeError.noParts }
@@ -378,7 +378,7 @@ extension MatterNode {
                                    clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.tags))
         }
         return BridgedDevice(info: info, endpoint: 1, partEndpoints: endpoints, parts: partClusters,
-                             basicInformation: nil, power: power)
+                             basicInformation: await dataModel.cluster(BasicInformationCluster.id, on: 0) as? AttributeCluster, power: power)
     }
 }
 
