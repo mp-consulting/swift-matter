@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/mp-consulting/swift-matter/security/advisories/new
+    about: Security problems are reported privately, never in an issue.

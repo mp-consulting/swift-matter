@@ -1,0 +1,53 @@
+name: Bug report
+description: The library, the bridge API or the demo does not behave as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security problem goes through the Security tab instead (SECURITY.md), never an issue.
+        Keep real pairing codes, passcodes and keys out of everything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did, what you expected, and what happened instead. Cite the specification's section if you know it.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The swift-matter version or commit.
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: The operating system and the Swift version (`swift --version`).
+      placeholder: "macOS 27, Swift 6.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: commissioner
+    attributes:
+      label: Commissioner
+      description: The controller involved, if any.
+      multiple: true
+      options:
+        - Apple Home
+        - Google Home
+        - Amazon Alexa
+        - SmartThings
+        - Home Assistant
+        - chip-tool or connectedhomeip's Python controller
+        - None
+        - Other
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The node's log around the problem, at debug level if you can (`matter-bridge-demo --verbose`).
+      render: text
