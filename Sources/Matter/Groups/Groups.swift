@@ -31,6 +31,10 @@ public actor Groups {
     struct Membership: Equatable {
         var name: String
         var endpoints: Set<EndpointNumber>
+        /// Its senders hold Operate on its endpoints through the AuxiliaryACL (Groupcast, Core §11.27.10).
+        var auxiliaryACL = false
+        /// On the group's own address (FF35:…), as legacy groups are; else on the IANA one, FF05::FA (Core §2.5.6.2).
+        var perGroupAddress = true
     }
 
     struct FabricGroups {
@@ -67,11 +71,18 @@ public actor Groups {
         let control: Bool
     }
 
-    private var fabrics: [FabricIndex: FabricGroups] = [:]
+    var fabrics: [FabricIndex: FabricGroups] = [:]
     private var peers: [PeerKey: MessageReceptionState] = [:]
     private let storage: any MatterStorage
     private let fabricTable: FabricTable
     private var observers: [@Sendable ([SocketAddress]) async -> Void] = []
+    /// Told when the AuxiliaryACL entries change, with the administrator that changed them if known, and the fabrics
+    /// whose entries changed.
+    var auxiliaryObservers: [@Sendable (NodeID?, [FabricIndex]) async -> Void] = []
+    var testing: Testing?
+    var testReporters: [@Sendable (TLVValue) async -> Void] = []
+    /// The AuxiliaryACL entries last announced: a change of them, whatever caused it, is announced once.
+    private var announcedAuxiliary: [AccessControlEntry] = []
     /// The Global Group Encrypted Data and Control Message Counters (Core §4.6.1): kept across restarts. Control
     /// counters are reserved in blocks: storage holds the end of the block, where a restart picks up.
     private var counters: (data: UInt32, control: UInt32)
@@ -89,6 +100,7 @@ public actor Groups {
             counters = (MessageCounter.initialValue(), MessageCounter.initialValue())
         }
         reservedControl = counters.control
+        announcedAuxiliary = auxiliaryEntries
     }
 
     /// Called with the multicast addresses to listen on whenever memberships change.
@@ -265,6 +277,8 @@ public actor Groups {
     public func removeFabric(_ fabric: FabricIndex) async {
         peers = peers.filter { $0.key.fabric != fabric }
         guard fabrics.removeValue(forKey: fabric) != nil else { return }
+        // Leaving a fabric is not announced as an AuxiliaryACL change (Core §9.10.9.4).
+        announcedAuxiliary = auxiliaryEntries
         _ = await membershipChanged()
     }
 
@@ -274,26 +288,44 @@ public actor Groups {
         if changed { _ = await membershipChanged() }
     }
 
-    private func membershipChanged() async -> IMStatus {
+    func membershipChanged(by admin: NodeID? = nil) async -> IMStatus {
         do { try await save() } catch { return .failure }
         let addresses = await multicastAddresses
         for observer in observers { await observer(addresses) }
+        let auxiliary = auxiliaryEntries
+        if auxiliary != announcedAuxiliary {
+            let changed = Set(auxiliary.map(\.fabricIndex)).union(announcedAuxiliary.map(\.fabricIndex)).filter { fabric in
+                auxiliary.filter { $0.fabricIndex == fabric } != announcedAuxiliary.filter { $0.fabricIndex == fabric }
+            }.sorted()
+            announcedAuxiliary = auxiliary
+            for observer in auxiliaryObservers { await observer(admin, changed) }
+        }
         return .success
     }
 
-    /// The multicast addresses of the groups an endpoint is in, by their fabric's id (Core §2.5.6.2).
+    /// The multicast addresses of the groups an endpoint is in: a group's own, by its fabric's id, or the IANA one
+    /// that groups share (Core §2.5.6.2).
     public var multicastAddresses: [SocketAddress] {
         get async {
             var addresses: [SocketAddress] = []
-            for (fabric, state) in fabrics where !state.memberships.isEmpty {
+            var shared = false
+            for (fabric, state) in fabrics.sorted(by: { $0.key < $1.key }) where !state.memberships.isEmpty {
                 guard let fabricID = await fabricTable.fabric(fabric)?.fabricID else { continue }
-                for group in state.memberships.keys.sorted() {
+                for (group, membership) in state.memberships.sorted(by: { $0.key < $1.key }) {
+                    guard membership.perGroupAddress else {
+                        shared = true
+                        continue
+                    }
                     if let address = try? Self.multicastAddress(fabricID: fabricID, group: group) { addresses.append(address) }
                 }
             }
+            if shared, let address = try? SocketAddress(ipAddress: Self.ianaAddress, port: 5540) { addresses.insert(address, at: 0) }
             return addresses
         }
     }
+
+    /// The site-scoped multicast address IANA assigned to Matter, which Groupcast groups share (Core §2.5.6.2).
+    public static let ianaAddress = "ff05::fa"
 
     // MARK: - Receiving (Core §4.16.3)
 
@@ -376,7 +408,7 @@ public actor Groups {
 
     // MARK: - Storage
 
-    private func save() async throws {
+    func save() async throws {
         try await storage.setValue(TLVEncoder.encode(Self.encode(fabrics)), for: StorageKey.groups)
     }
 
@@ -395,6 +427,7 @@ public actor Groups {
                     TLVElement(.structure([
                         .field(1, .unsigned(UInt64(group))), .field(2, .utf8(membership.name)),
                         .field(3, .array(membership.endpoints.sorted().map { TLVElement(.unsigned(UInt64($0))) })),
+                        .field(4, .bool(membership.auxiliaryACL)), .field(5, .bool(membership.perGroupAddress)),
                     ]))
                 })),
             ]))
@@ -420,9 +453,11 @@ public actor Groups {
             }
             for membership in try fields.elements(4) {
                 let membershipFields = try TLVStruct(membership.value)
+                // Groups kept before Groupcast are legacy ones: no AuxiliaryACL, their own address (Core §2.12.2).
                 state.memberships[try membershipFields.uint(1, as: UInt16.self)] = Membership(
                     name: try membershipFields.string(2),
-                    endpoints: Set(try membershipFields.elements(3).compactMap { $0.value.uint.flatMap(UInt16.init(exactly:)) }))
+                    endpoints: Set(try membershipFields.elements(3).compactMap { $0.value.uint.flatMap(UInt16.init(exactly:)) }),
+                    auxiliaryACL: membershipFields[4]?.bool ?? false, perGroupAddress: membershipFields[5]?.bool ?? true)
             }
             fabrics[try fields.uint(1, as: UInt8.self)] = state
         }

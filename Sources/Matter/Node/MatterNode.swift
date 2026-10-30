@@ -114,7 +114,7 @@ public actor MatterNode {
 
         let root = await RootClusters.make(information: information, commissioning: commissioning, fabrics: fabrics,
                                            accessControl: accessControl, attestation: attestation, startTime: .now, storage: storage,
-                                           groups: groups)
+                                           groups: groups, dataModel: dataModel)
         try await dataModel.add(Endpoint(number: 0, deviceTypes: [DeviceTypes.rootNode], clusters: root))
     }
 

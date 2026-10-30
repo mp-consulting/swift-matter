@@ -27,13 +27,25 @@ public struct AccessControlEntry: Hashable, Sendable {
     public var subjects: [UInt64]?
     /// Nil grants every target.
     public var targets: [Target]?
+    /// Why an AuxiliaryACL entry exists; nil in the ACL (Core §9.10.5.5).
+    public var auxiliaryType: AuxiliaryType?
 
-    public init(fabricIndex: FabricIndex, privilege: Privilege, authMode: AuthMode, subjects: [UInt64]?, targets: [Target]? = nil) {
+    public enum AuxiliaryType: UInt8, Sendable {
+        case system = 0
+        case groupcast = 1
+    }
+
+    /// TargetsPerAccessControlEntry: how many targets an entry holds.
+    public static let targetsPerEntry = 3
+
+    public init(fabricIndex: FabricIndex, privilege: Privilege, authMode: AuthMode, subjects: [UInt64]?, targets: [Target]? = nil,
+                auxiliaryType: AuxiliaryType? = nil) {
         self.fabricIndex = fabricIndex
         self.privilege = privilege
         self.authMode = authMode
         self.subjects = subjects
         self.targets = targets
+        self.auxiliaryType = auxiliaryType
     }
 
     /// The TLV of the ACL attribute's entries.
@@ -51,6 +63,7 @@ public struct AccessControlEntry: Hashable, Sendable {
                 })
             } ?? .null),
         ]
+        if let auxiliaryType { fields.append(.field(5, .unsigned(UInt64(auxiliaryType.rawValue)))) }
         fields.append(.field(fabricIndexFieldTag, .unsigned(UInt64(fabricIndex))))
         return .structure(fields)
     }
@@ -142,6 +155,8 @@ public protocol AccessController: Sendable {
 public actor AccessControlEntries: AccessController {
     private var entries: [AccessControlEntry] = []
     private let storage: any MatterStorage
+    /// The AuxiliaryACL's entries (Groupcast's), which grant as the ACL's do (Core §9.10.6.10).
+    private var auxiliary: (@Sendable () async -> [AccessControlEntry])?
     private var observers: [@Sendable () -> Void] = []
 
     public init(storage: any MatterStorage) async {
@@ -169,10 +184,14 @@ public actor AccessControlEntries: AccessController {
 
     public func removeFabric(_ fabric: FabricIndex) async { await replace(fabric: fabric, with: []) }
 
-    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) -> Privilege? {
+    public func useAuxiliary(_ provider: @escaping @Sendable () async -> [AccessControlEntry]) { auxiliary = provider }
+
+    public func privilege(of session: SessionInfo, endpoint: EndpointNumber, cluster: ClusterID, deviceTypes: [UInt32]) async -> Privilege? {
         // A PASE session commissions the node: it holds Administer implicitly (Core §6.6.2.9).
         if session.kind == .pase { return .administer }
-        return entries.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }.map(\.privilege).max()
+        // The AuxiliaryACL grants only to groups: other sessions need not ask for it.
+        let all = session.kind == .group ? entries + (await auxiliary?() ?? []) : entries
+        return all.filter { $0.grants(session, endpoint: endpoint, cluster: cluster, deviceTypes: deviceTypes) }.map(\.privilege).max()
     }
 
     private func save() async {

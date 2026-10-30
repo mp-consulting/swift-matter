@@ -484,13 +484,18 @@ public actor MessageLayer {
     private func receiveGroup(_ bytes: [UInt8], header: MessageHeader, headerLength: Int, from peer: PeerAddress) async {
         // Group messages are private: the P flag set (Core §4.16.2, §4.18.5).
         guard let groups, header.privacy else { return }
-        for candidate in await groups.candidates(sessionID: header.sessionID) {
+        typealias Result = GroupcastCluster.GroupcastTestResultEnum
+        let candidates = await groups.candidates(sessionID: header.sessionID)
+        if candidates.isEmpty { await groups.reportTest(Result.noAvailableKey, fabric: nil) }
+        var authenticated = false
+        for candidate in candidates {
             // The header's counter, source and destination are readable only once the privacy is removed.
             guard let clear = try? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy),
                   let decoded = try? MessageHeader.decode(clear).0, let source = decoded.source,
                   let message = try? Message.open(frame: clear, header: decoded, headerLength: headerLength, key: candidate.key,
                                                   nonceSourceNodeID: source)
             else { continue }
+            authenticated = true
             switch decoded.destination {
             case .node(let node) where decoded.isControl:
                 // MCSP between two nodes under the group key (Core §4.18.5): addressed to this node only.
@@ -503,7 +508,7 @@ public actor MessageLayer {
                 switch await groups.check(decoded.counter, fabric: candidate.fabric, source: source, control: false,
                                           cacheAndSync: candidate.cacheAndSync) {
                 case .new: dispatchGroup(message, session: session)
-                case .duplicate: break
+                case .duplicate: await groups.reportTest(Result.messageReplay, fabric: candidate.fabric, group: group)
                 case .unsynchronized: await awaitSync(message, session: session, candidate: candidate)
                 }
             default:
@@ -511,6 +516,8 @@ public actor MessageLayer {
             }
             return
         }
+        // No key opened it: reported to a fabric under Groupcast testing (Core §11.27.7.6).
+        if !candidates.isEmpty, !authenticated { await groups.reportTest(Result.failedAuth, fabric: nil) }
     }
 
     /// Hands an authenticated group message to its protocol, after the ones before it (nothing answers them to keep a

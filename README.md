@@ -45,8 +45,8 @@ report and the fabric list. Apple Home, Google Home and Alexa have not been trie
 ## Limits
 
 - Matter over IP only: no Bluetooth (BTP), Thread or Wi-Fi PAF commissioning; the node must already be on the network.
-- Groups take trust-first and cache-and-sync keys (MCSP); no Groupcast cluster. No OTA (it needs a vendor ID of its own),
-  no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`) is off by default.
+- Groups take trust-first and cache-and-sync keys (MCSP); Groupcast as a listener only (no sender). No OTA (it needs a
+  vendor ID of its own), no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`) is off by default.
 - Scenes are reported with an empty table; level and color transitions complete at once.
 
 ## Certification

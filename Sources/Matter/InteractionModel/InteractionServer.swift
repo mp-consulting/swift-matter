@@ -93,7 +93,15 @@ public actor InteractionServer: ProtocolHandler {
                 guard let pathValue = request.value[0], var path = try? CommandPath(tlv: pathValue) else { continue }
                 for endpoint in targets(path.endpoint) {
                     path.endpoint = endpoint
-                    _ = await invoke(path, fields: request.value[1] ?? .structure([]), context: context)
+                    let result = await invoke(path, fields: request.value[1] ?? .structure([]), context: context)
+                    // Groupcast testing reports each concrete path the invoke reached (Core §11.27.7.6).
+                    if case .status(let status) = result, [.unsupportedEndpoint, .unsupportedCluster, .unsupportedCommand].contains(status.status) {
+                        continue
+                    }
+                    var allowed = true
+                    if case .status(let status) = result, status.status == .unsupportedAccess { allowed = false }
+                    await groups.reportTest(GroupcastCluster.GroupcastTestResultEnum.success, fabric: fabric, group: group, path: path,
+                                            allowed: allowed)
                 }
             }
         case .writeRequest:

@@ -243,3 +243,97 @@ struct GroupTests {
         #expect(await fixture.base.node.groups.endpoints(of: Self.group, fabric: 1).isEmpty)
     }
 }
+
+struct GroupcastTests {
+    let key = MatterCrypto.random(16)
+    let groups = GroupTests()
+
+    func join(_ fixture: BridgeTests.Fixture, endpoints: [UInt64], auxiliary: Bool?, key: [UInt8]? = nil) async throws -> InvokeResult {
+        var fields: [TLVElement] = [
+            .field(0, .unsigned(UInt64(GroupTests.group))), .field(1, .array(endpoints.map { TLVElement(.unsigned($0)) })),
+            .field(2, .unsigned(GroupTests.keySetID)),
+        ]
+        if let key { fields.append(.field(3, .bytes(key))) }
+        if let auxiliary { fields.append(.field(4, .bool(auxiliary))) }
+        return try await fixture.invoke(0, GroupcastCluster.id, GroupcastCluster.Command.joinGroup, fields)
+    }
+
+    @Test func joinsAGroupWhoseSendersOperateItsEndpoints() async throws {
+        let fixture = try await BridgeTests.Fixture()
+        let commands = fixture.commands
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "lamp", name: "Lamp"), kind: .onOffLight) { await commands.append($0) }
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "plug", name: "Plug"), kind: .onOffPlug)
+
+        // One command: the key, the endpoint, and Operate for the group's senders through the AuxiliaryACL.
+        guard case .status(let joined) = try await join(fixture, endpoints: [2], auxiliary: true, key: key) else { Issue.record("no status"); return }
+        #expect(joined.status == .success)
+        let membership = try await fixture.read(0, GroupcastCluster.id, GroupcastCluster.Attribute.membership)
+        typealias M = GroupcastCluster.MembershipStruct
+        let entry = try #require(membership.elements?.first?.value)
+        #expect(entry[M.groupId]?.uint == UInt64(GroupTests.group) && entry[M.keySetId]?.uint == GroupTests.keySetID)
+        #expect(entry[M.hasAuxiliaryAcl] == .bool(true) && entry[M.mcastAddrPolicy]?.uint == GroupcastCluster.MulticastAddrPolicyEnum.ianaAddr)
+        let auxiliary = try await fixture.read(0, AccessControlCluster.id, AccessControlCluster.Attribute.auxiliaryAcl)
+        #expect(auxiliary.elements?.first?.value[5]?.uint == UInt64(AccessControlEntry.AuxiliaryType.groupcast.rawValue))
+        #expect(await fixture.base.node.groups.multicastAddresses.map { $0.ipAddress } == ["ff05::fa"])
+        let (_, events) = try await fixture.base.commissioner.client.read(
+            [], events: [EventPath(endpoint: 0, cluster: AccessControlCluster.id, event: AccessControlCluster.Event.auxiliaryAccessUpdated)],
+            session: fixture.session)
+        #expect(events.count == 1)
+
+        // No ACL entry for the group: the AuxiliaryACL lets its command through, to the member endpoint only.
+        let transport = await fixture.base.commissioner.layer.transport
+        let operational = Fabric.operationalGroupKey(epochKey: key, compressedFabricID: try #require(await fixture.base.node.fabrics.fabric(1)).compressedFabricID)
+        let on = try Message.groupFrame(
+            payloadHeader: PayloadHeader(isInitiator: true, needsAck: false, opcode: IMOpcode.invokeRequest.rawValue, exchangeID: 1, protocolID: .interactionModel),
+            payload: TLVEncoder.encode(.structure([.field(0, .bool(true)), .field(1, .bool(false)), .field(2, .array([TLVElement(.structure([
+                .field(0, CommandPath(endpoint: nil, cluster: OnOffCluster.id, command: OnOffCluster.Command.on).tlv), .field(1, .structure([])),
+            ]))]))])),
+            group: GroupTests.group, source: 0x1122, counter: 100, operationalKey: operational)
+        try await transport.send(on, to: .memory("node"))
+        try await eventually { await commands.values == [.setOn(true)] }
+        #expect(try await fixture.read(3, OnOffCluster.id, OnOffCluster.Attribute.onOff) == .bool(false))
+
+        // Without the AuxiliaryACL the group has no access again.
+        _ = try await fixture.invoke(0, GroupcastCluster.id, GroupcastCluster.Command.configureAuxiliaryAcl,
+                                     [.field(0, .unsigned(UInt64(GroupTests.group))), .field(1, .bool(false))])
+        #expect(try await fixture.read(0, AccessControlCluster.id, AccessControlCluster.Attribute.auxiliaryAcl) == .array([]))
+
+        // Leaving answers with the endpoints that left, and takes the group's key with it.
+        guard case .response(_, let left) = try await fixture.invoke(0, GroupcastCluster.id, GroupcastCluster.Command.leaveGroup,
+                                                                     [.field(0, .unsigned(UInt64(GroupTests.group)))]) else { Issue.record("no response"); return }
+        #expect(left[1]?.elements?.map(\.value) == [.unsigned(2)])
+        #expect(try await fixture.read(0, GroupcastCluster.id, GroupcastCluster.Attribute.membership) == .array([]))
+        #expect(await fixture.base.node.groups.keySetIDs(fabric: 1).isEmpty)
+    }
+
+    @Test func checksEndpointsKeysAndTesting() async throws {
+        let fixture = try await BridgeTests.Fixture()
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "lamp", name: "Lamp"), kind: .onOffLight)
+        func status(_ result: InvokeResult) -> IMStatus? { if case .status(let status) = result { status.status } else { nil } }
+        // The root endpoint, an unknown endpoint, and a key set that does not exist yet without a key.
+        #expect(status(try await join(fixture, endpoints: [0], auxiliary: nil, key: key)) == .unsupportedEndpoint)
+        #expect(status(try await join(fixture, endpoints: [9], auxiliary: nil, key: key)) == .unsupportedEndpoint)
+        #expect(status(try await join(fixture, endpoints: [2], auxiliary: nil)) == .notFound)
+        #expect(status(try await join(fixture, endpoints: [2], auxiliary: nil, key: key)) == .success)
+        // The key set exists now: a new key under its id is refused.
+        #expect(status(try await join(fixture, endpoints: [2], auxiliary: nil, key: key)) == .alreadyExists)
+
+        // Listener testing: the fabric under test, then each failed message reported as an event.
+        _ = try await fixture.invoke(0, GroupcastCluster.id, GroupcastCluster.Command.groupcastTesting,
+                                     [.field(0, .unsigned(GroupcastCluster.GroupcastTestingEnum.enableListenerTesting)), .field(1, .unsigned(60))])
+        #expect(try await fixture.read(0, GroupcastCluster.id, GroupcastCluster.Attribute.fabricUnderTest) == .unsigned(1))
+        let stranger = try Message.groupFrame(
+            payloadHeader: PayloadHeader(isInitiator: true, needsAck: false, opcode: IMOpcode.invokeRequest.rawValue, exchangeID: 1, protocolID: .interactionModel),
+            payload: [0x15, 0x18], group: GroupTests.group, source: 0x1122, counter: 1, operationalKey: MatterCrypto.random(16))
+        try await (await fixture.base.commissioner.layer.transport).send(stranger, to: .memory("node"))
+        try await eventually {
+            let read = try? await fixture.base.commissioner.client.read(
+                [], events: [EventPath(endpoint: 0, cluster: GroupcastCluster.id, event: GroupcastCluster.Event.groupcastTesting)],
+                session: fixture.session)
+            return read?.1.contains { if case .data(let record) = $0 { record.data[7]?.uint == GroupcastCluster.GroupcastTestResultEnum.noAvailableKey } else { false } } ?? false
+        }
+        _ = try await fixture.invoke(0, GroupcastCluster.id, GroupcastCluster.Command.groupcastTesting,
+                                     [.field(0, .unsigned(GroupcastCluster.GroupcastTestingEnum.disableTesting))])
+        #expect(try await fixture.read(0, GroupcastCluster.id, GroupcastCluster.Attribute.fabricUnderTest) == .unsigned(0))
+    }
+}
