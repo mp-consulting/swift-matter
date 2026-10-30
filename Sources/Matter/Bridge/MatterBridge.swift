@@ -363,25 +363,21 @@ public actor BridgedDevice {
 }
 
 extension MatterNode {
-    /// Makes the node one device rather than a bridge (Core §9.2): each part on an endpoint of its own from
-    /// `firstEndpoint`, which the root's PartsList lists. The node's Basic Information (`NodeInformation`) names it;
-    /// `info` is kept for the caller. A battery's Power Source is on the first endpoint.
+    /// Makes the node one device rather than a bridge (Core §9.2): each part on an endpoint of its own from 1, which
+    /// the root's PartsList lists. The node's Basic Information (`NodeInformation`) names it; `info` is kept for the
+    /// caller. A battery's Power Source is on endpoint 1.
     @discardableResult
-    public func addDevice(_ info: BridgedDeviceInfo, parts: [DevicePart], battery: Bool = false,
-                          firstEndpoint: EndpointNumber = 1) async throws -> BridgedDevice {
+    public func addDevice(_ info: BridgedDeviceInfo, parts: [DevicePart], battery: Bool = false) async throws -> BridgedDevice {
         guard !parts.isEmpty else { throw BridgeError.noParts }
-        guard Int(firstEndpoint) + parts.count - 1 < Int(EndpointNumber.max) else { throw BridgeError.endpointsExhausted }
-        let endpoints = parts.indices.map { firstEndpoint + EndpointNumber($0) }
-        var partClusters: [[any ClusterHandler]] = []
-        for part in parts { partClusters.append(await part.kind.makeClusters(part.handler)) }
-        let power = battery ? DeviceClusters.battery(endpoints: endpoints) : nil
+        let endpoints = parts.indices.map { EndpointNumber($0 + 1) }
+        let (partClusters, power) = await MatterBridge.build(parts, battery: battery, powering: endpoints)
         for (index, part) in parts.enumerated() {
             let first = index == 0
             try await add(Endpoint(number: endpoints[index],
                                    deviceTypes: part.kind.deviceTypes + (first && battery ? [DeviceTypes.powerSource] : []),
                                    clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.tags))
         }
-        return BridgedDevice(info: info, endpoint: firstEndpoint, partEndpoints: endpoints, parts: partClusters,
+        return BridgedDevice(info: info, endpoint: 1, partEndpoints: endpoints, parts: partClusters,
                              basicInformation: nil, power: power)
     }
 }
@@ -438,10 +434,8 @@ public actor MatterBridge {
         if allocated { try await saveEndpoints() }
 
         let basicInformation = Self.basicInformation(info)
-        var partClusters: [[any ClusterHandler]] = []
-        for part in parts { partClusters.append(await part.kind.makeClusters(part.handler)) }
         // A battery powers the whole device: its Power Source is on the Bridged Node (Core §9.12.2.3).
-        let power = battery ? DeviceClusters.battery(endpoints: [top] + (parts.count > 1 ? partEndpoints : [])) : nil
+        let (partClusters, power) = await Self.build(parts, battery: battery, powering: [top] + (parts.count > 1 ? partEndpoints : []))
         var topTypes = [DeviceTypes.bridgedNode] + (battery ? [DeviceTypes.powerSource] : [])
         var topClusters: [any ClusterHandler] = [basicInformation] + (power.map { [$0] } ?? [])
         if parts.count == 1 {
@@ -483,6 +477,14 @@ public actor MatterBridge {
                 TLVElement(.structure([.field(0, .utf8(id)), .field(1, .unsigned(UInt64(number)))]))
             })),
         ])), for: StorageKey.bridgeEndpoints)
+    }
+
+    /// Each part's clusters, and the Power Source of a battery that powers `endpoints`.
+    static func build(_ parts: [DevicePart], battery: Bool, powering endpoints: [EndpointNumber]) async
+        -> (clusters: [[any ClusterHandler]], power: AttributeCluster?) {
+        var clusters: [[any ClusterHandler]] = []
+        for part in parts { clusters.append(await part.kind.makeClusters(part.handler)) }
+        return (clusters, battery ? DeviceClusters.battery(endpoints: endpoints) : nil)
     }
 
     static func basicInformation(_ info: BridgedDeviceInfo) -> AttributeCluster {

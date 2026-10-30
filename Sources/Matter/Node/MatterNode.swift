@@ -207,7 +207,7 @@ public actor MatterNode {
     private var commissionableAdvertisement: CommissionableAdvertisement {
         CommissionableAdvertisement(discriminator: setupPayload.discriminator, vendorID: configuration.information.vendorID,
                                     productID: configuration.information.productID, commissioningMode: 1,
-                                    deviceType: configuration.deviceType, deviceName: configuration.information.productName,
+                                    deviceType: configuration.deviceType, deviceName: configuration.information.productName.utf8Prefix(32),
                                     port: configuration.port, parameters: layer.parameters)
     }
 

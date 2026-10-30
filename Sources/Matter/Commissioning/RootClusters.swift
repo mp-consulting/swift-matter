@@ -57,16 +57,18 @@ enum RootClusters {
     static func basicInformation(_ info: NodeInformation, storage: any MatterStorage) async -> AttributeCluster {
         typealias A = BasicInformationCluster.Attribute
         typealias Minima = BasicInformationCluster.CapabilityMinimaStruct
-        // NodeLabel and Location are written by controllers and survive restarts.
+        // NodeLabel and Location are written by controllers and survive restarts. Strings are cut to their limits
+        // (Core §11.1.5), so a caller may pass longer names.
+        func text(_ value: String, _ bytes: Int = 32) -> TLVValue { .utf8(value.utf8Prefix(bytes)) }
         let stored = await storage.value(for: StorageKey.basicInformation).flatMap { try? TLVStruct(decoding: $0) }
         let cluster = AttributeCluster(BasicInformationCluster.definition, attributes: [
             A.dataModelRevision: .unsigned(UInt64(SpecificationVersion.dataModelRevision)),
-            A.vendorName: .utf8(info.vendorName), A.vendorId: .unsigned(UInt64(info.vendorID)),
-            A.productName: .utf8(info.productName), A.productId: .unsigned(UInt64(info.productID)),
-            A.nodeLabel: .utf8(stored?[1]?.string ?? info.nodeLabel), A.location: .utf8(stored?[2]?.string ?? "XX"),
-            A.hardwareVersion: .unsigned(UInt64(info.hardwareVersion)), A.hardwareVersionString: .utf8(info.hardwareVersionString),
-            A.softwareVersion: .unsigned(UInt64(info.softwareVersion)), A.softwareVersionString: .utf8(info.softwareVersionString),
-            A.serialNumber: .utf8(info.serialNumber), A.uniqueId: .utf8(info.uniqueID),
+            A.vendorName: text(info.vendorName), A.vendorId: .unsigned(UInt64(info.vendorID)),
+            A.productName: text(info.productName), A.productId: .unsigned(UInt64(info.productID)),
+            A.nodeLabel: text(stored?[1]?.string ?? info.nodeLabel), A.location: .utf8(stored?[2]?.string ?? "XX"),
+            A.hardwareVersion: .unsigned(UInt64(info.hardwareVersion)), A.hardwareVersionString: text(info.hardwareVersionString, 64),
+            A.softwareVersion: .unsigned(UInt64(info.softwareVersion)), A.softwareVersionString: text(info.softwareVersionString, 64),
+            A.serialNumber: text(info.serialNumber), A.uniqueId: text(info.uniqueID),
             A.capabilityMinima: .structure([.field(Minima.caseSessionsPerFabric, .unsigned(3)), .field(Minima.subscriptionsPerFabric, .unsigned(3))]),
             A.specificationVersion: .unsigned(UInt64(SpecificationVersion.specificationVersion)),
             A.maxPathsPerInvoke: .unsigned(1), A.configurationVersion: .unsigned(1),
