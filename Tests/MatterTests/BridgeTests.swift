@@ -166,4 +166,46 @@ struct BridgeTests {
         guard case .status(let status) = result else { Issue.record("Expected a status"); return }
         #expect(status.status != .success)
     }
+
+    @Test func thermostatsLocksAndButtons() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let thermostat = try await fixture.bridge.add(BridgedDeviceInfo(id: "thermo", name: "Hall"), kind: .thermostat(heating: true, cooling: true)) {
+            await commands.append($0)
+        }
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "lock", name: "Front door"), kind: .doorLock) { await commands.append($0) }
+        let button = try await fixture.bridge.add(BridgedDeviceInfo(id: "button", name: "Button"), kind: .genericSwitch)
+
+        // Setpoints: a write and a relative change.
+        let statuses = try await fixture.base.commissioner.client.write([
+            (AttributePath(endpoint: 2, cluster: ThermostatCluster.id, attribute: ThermostatCluster.Attribute.occupiedHeatingSetpoint), .signed(2150)),
+            (AttributePath(endpoint: 2, cluster: ThermostatCluster.id, attribute: ThermostatCluster.Attribute.occupiedHeatingSetpoint), .signed(9000)),
+        ], session: fixture.session)
+        #expect(statuses.map(\.1.status) == [.success, .constraintError])
+        _ = try await fixture.invoke(2, ThermostatCluster.id, ThermostatCluster.Command.setpointRaiseLower, [.field(0, .unsigned(0)), .field(1, .signed(-5))])
+        #expect(try await fixture.read(2, ThermostatCluster.id, ThermostatCluster.Attribute.occupiedHeatingSetpoint) == .signed(2100))
+        await thermostat.update(.localTemperature(19.5))
+        #expect(try await fixture.read(2, ThermostatCluster.id, ThermostatCluster.Attribute.localTemperature) == .signed(1950))
+
+        // Unlocking needs a timed invoke.
+        let untimed = try await fixture.invoke(3, DoorLockCluster.id, DoorLockCluster.Command.unlockDoor)
+        guard case .status(let refused) = untimed else { Issue.record("Expected a status"); return }
+        #expect(refused.status == .needsTimedInteraction)
+        let timed = try await fixture.base.commissioner.client.invoke(
+            CommandPath(endpoint: 3, cluster: DoorLockCluster.id, command: DoorLockCluster.Command.unlockDoor), timed: .seconds(5),
+            session: fixture.session)
+        guard case .status(let unlocked) = timed else { Issue.record("Expected a status"); return }
+        #expect(unlocked.status == .success)
+        #expect(try await fixture.read(3, DoorLockCluster.id, DoorLockCluster.Attribute.lockState) == .unsigned(2))
+
+        #expect(await commands.values == [.setHeatingSetpoint(celsius: 21.5), .setHeatingSetpoint(celsius: 21.0), .setLocked(false)])
+
+        // A double press is reported as Switch events.
+        await button.press(.double)
+        let (_, events) = try await fixture.base.commissioner.client.read([], events: [EventPath(endpoint: 4, cluster: SwitchCluster.id)],
+                                                                         session: fixture.session)
+        let ids = events.compactMap { if case .data(let record) = $0 { record.event } else { nil } }
+        #expect(ids == [SwitchCluster.Event.initialPress, SwitchCluster.Event.shortRelease, SwitchCluster.Event.multiPressOngoing,
+                        SwitchCluster.Event.shortRelease, SwitchCluster.Event.multiPressComplete])
+    }
 }

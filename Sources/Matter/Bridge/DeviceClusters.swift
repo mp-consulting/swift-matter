@@ -16,6 +16,11 @@ public enum DeviceCommand: Hashable, Sendable {
     case stopCovering
     /// 0...100.
     case setFanSpeed(percent: UInt8)
+    case setHeatingSetpoint(celsius: Double)
+    case setCoolingSetpoint(celsius: Double)
+    /// Thermostat SystemMode: off 0, cool 3, heat 4.
+    case setThermostatMode(UInt8)
+    case setLocked(Bool)
     case identify(seconds: UInt16)
 }
 
@@ -360,6 +365,109 @@ enum DeviceClusters {
             A.batReplacementNeeded: .bool(false), A.batReplaceability: .unsigned(0), A.batPercentRemaining: .null,
             A.activeBatFaults: .array([]), A.batReplacementDescription: .utf8(""), A.batQuantity: .unsigned(1),
             A.endpointList: .array(endpoints.map { TLVElement(.unsigned(UInt64($0))) }),
+        ])
+    }
+}
+
+// MARK: - Thermostat (Application Clusters §4.3), Door Lock (§5.2), Switch (§1.13)
+
+extension DeviceClusters {
+    /// Hundredths of a degree from a written attribute, within the setpoint limits.
+    static func setpoint(_ value: TLVValue, in range: ClosedRange<Int64>) throws -> Int64 {
+        guard let raw = value.int, range.contains(raw) else { throw StatusError(.constraintError) }
+        return raw
+    }
+
+    static func thermostat(heating: Bool, cooling: Bool, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
+        typealias A = ThermostatCluster.Attribute
+        var features: ThermostatCluster.Feature = []
+        if heating { features.insert(.heating) }
+        if cooling { features.insert(.cooling) }
+        let heat: ClosedRange<Int64> = 700...3000, cool: ClosedRange<Int64> = 1600...3200
+        var attributes: [AttributeID: TLVValue] = [
+            A.localTemperature: .null,
+            // Cooling and heating (4), heating only (2), cooling only (0) (§4.3.9.19).
+            A.controlSequenceOfOperation: .unsigned(heating && cooling ? 4 : heating ? 2 : 0),
+            A.systemMode: .unsigned(heating ? 4 : 3),
+        ]
+        if heating {
+            attributes.merge([A.occupiedHeatingSetpoint: .signed(2000), A.absMinHeatSetpointLimit: .signed(heat.lowerBound),
+                              A.absMaxHeatSetpointLimit: .signed(heat.upperBound), A.minHeatSetpointLimit: .signed(heat.lowerBound),
+                              A.maxHeatSetpointLimit: .signed(heat.upperBound)]) { $1 }
+        }
+        if cooling {
+            attributes.merge([A.occupiedCoolingSetpoint: .signed(2600), A.absMinCoolSetpointLimit: .signed(cool.lowerBound),
+                              A.absMaxCoolSetpointLimit: .signed(cool.upperBound), A.minCoolSetpointLimit: .signed(cool.lowerBound),
+                              A.maxCoolSetpointLimit: .signed(cool.upperBound)]) { $1 }
+        }
+        let cluster = AttributeCluster(ThermostatCluster.definition, featureMap: features.rawValue, attributes: attributes)
+        await cluster.onWrite { _, attribute, value, _ in
+            switch attribute {
+            case A.occupiedHeatingSetpoint where heating:
+                try await deliver(.setHeatingSetpoint(celsius: Double(try setpoint(value, in: heat)) / 100), to: handler)
+            case A.occupiedCoolingSetpoint where cooling:
+                try await deliver(.setCoolingSetpoint(celsius: Double(try setpoint(value, in: cool)) / 100), to: handler)
+            case A.systemMode:
+                // Off (0), cool (3) and heat (4) as the features allow.
+                guard let mode = value.uint, mode == 0 || mode == 3 && cooling || mode == 4 && heating else { throw StatusError(.constraintError) }
+                try await deliver(.setThermostatMode(UInt8(mode)), to: handler)
+            default:
+                throw StatusError(.unsupportedWrite)
+            }
+        }
+        await cluster.handle(ThermostatCluster.Command.setpointRaiseLower) { cluster, fields, _ in
+            let request = try TLVStruct(fields)
+            // Heat (0), cool (1) or both (2); the amount is in tenths of a degree.
+            let mode = try request.uint(0, as: UInt8.self)
+            guard mode <= 2, let amount = request[1]?.int, (-128...127).contains(amount) else { throw StatusError(.invalidCommand) }
+            var values: [AttributeID: TLVValue] = [:]
+            if mode != 1, heating, let current = await cluster.value(A.occupiedHeatingSetpoint)?.int {
+                let target = min(max(current + amount * 10, heat.lowerBound), heat.upperBound)
+                try await deliver(.setHeatingSetpoint(celsius: Double(target) / 100), to: handler)
+                values[A.occupiedHeatingSetpoint] = .signed(target)
+            }
+            if mode != 0, cooling, let current = await cluster.value(A.occupiedCoolingSetpoint)?.int {
+                let target = min(max(current + amount * 10, cool.lowerBound), cool.upperBound)
+                try await deliver(.setCoolingSetpoint(celsius: Double(target) / 100), to: handler)
+                values[A.occupiedCoolingSetpoint] = .signed(target)
+            }
+            await cluster.set(values)
+            return .success
+        }
+        return cluster
+    }
+
+    static func doorLock(_ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
+        typealias A = DoorLockCluster.Attribute
+        typealias C = DoorLockCluster.Command
+        // LockState null until the device reports; a deadbolt; normal operating mode only (bits clear = supported).
+        let cluster = AttributeCluster(DoorLockCluster.definition, attributes: [
+            A.lockState: .null, A.lockType: .unsigned(0), A.actuatorEnabled: .bool(true), A.operatingMode: .unsigned(0),
+            A.supportedOperatingModes: .unsigned(0xFFF6),
+        ])
+        @Sendable func operate(_ cluster: AttributeCluster, locked: Bool, context: AccessContext) async throws -> InvokeResult {
+            try await deliver(.setLocked(locked), to: handler)
+            await cluster.set(A.lockState, .unsigned(locked ? 1 : 2))
+            // LockOperation (§5.2.11.3): lock (0) or unlock (1), from a remote source (7).
+            await cluster.emit(DoorLockCluster.Event.lockOperation, data: .structure([
+                .field(0, .unsigned(locked ? 0 : 1)), .field(1, .unsigned(7)), .field(2, .null),
+                .field(3, context.fabricIndex.map { .unsigned(UInt64($0)) } ?? .null), .field(4, .unsigned(context.session.peerNodeID)),
+            ]))
+            return .success
+        }
+        await cluster.handle([
+            C.lockDoor: { cluster, _, context in try await operate(cluster, locked: true, context: context) },
+            C.unlockDoor: { cluster, _, context in try await operate(cluster, locked: false, context: context) },
+        ])
+        return cluster
+    }
+
+    /// A momentary button with release, long press and double press (§1.13.4).
+    static func genericSwitch() -> AttributeCluster {
+        typealias A = SwitchCluster.Attribute
+        let features = SwitchCluster.Feature([.momentarySwitch, .momentarySwitchRelease, .momentarySwitchLongPress, .momentarySwitchMultiPress])
+        return AttributeCluster(SwitchCluster.definition, featureMap: features.rawValue, attributes: [
+            A.numberOfPositions: .unsigned(2), A.currentPosition: .unsigned(0), A.multiPressMax: .unsigned(2),
         ])
     }
 }

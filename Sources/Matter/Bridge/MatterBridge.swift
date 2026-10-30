@@ -67,6 +67,17 @@ public struct DeviceKind: Sendable {
     public static let fan = DeviceKind(deviceTypes: [DeviceTypes.fan]) { handler in
         await base(handler, actuator: false) + [await DeviceClusters.groups(), await DeviceClusters.fanControl(handler)]
     }
+    public static func thermostat(heating: Bool = true, cooling: Bool = false) -> DeviceKind {
+        DeviceKind(deviceTypes: [DeviceTypes.thermostat]) { handler in
+            await base(handler, actuator: false) + [await DeviceClusters.thermostat(heating: heating, cooling: cooling, handler)]
+        }
+    }
+    /// Locking and unlocking need a timed interaction, as the Door Lock cluster requires (§5.2.10).
+    public static let doorLock = DeviceKind(deviceTypes: [DeviceTypes.doorLock]) { handler in
+        await base(handler, actuator: false) + [await DeviceClusters.doorLock(handler)]
+    }
+    /// A button: presses are reported with `BridgedDevice.press`.
+    public static let genericSwitch = sensor(DeviceTypes.genericSwitch) { DeviceClusters.genericSwitch() }
 }
 
 /// One function of a device, with the handler of its commands and tags that tell it from the device's other parts.
@@ -118,6 +129,21 @@ public enum DeviceState: Hashable, Sendable {
     case coveringPosition(percent100ths: UInt16)
     case fanSpeed(percent: UInt8)
     case battery(percent: UInt8)
+    /// Degrees Celsius.
+    case localTemperature(Double?)
+    case heatingSetpoint(Double)
+    case coolingSetpoint(Double)
+    /// Thermostat SystemMode: off 0, cool 3, heat 4.
+    case thermostatMode(UInt8)
+    /// Nil when the lock is neither locked nor unlocked (jammed, in motion).
+    case locked(Bool?)
+}
+
+/// A press of a bridged button (Generic Switch).
+public enum ButtonPress: Sendable {
+    case single
+    case double
+    case long
 }
 
 /// A device on the bridge.
@@ -195,12 +221,51 @@ public actor BridgedDevice {
             await set(WindowCoveringCluster.id, [WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths: .unsigned(clamped),
                                                  WindowCoveringCluster.Attribute.currentPositionLiftPercentage: .unsigned(clamped / 100)])
         case .fanSpeed(let percent): await set(FanControlCluster.id, DeviceClusters.fanValues(percent: percent))
+        case .localTemperature(let celsius):
+            let value = scaled(celsius, by: 100, in: -27315...32767).map { TLVValue.signed(Int64($0)) } ?? .null
+            await set(ThermostatCluster.id, [ThermostatCluster.Attribute.localTemperature: value])
+        case .heatingSetpoint(let celsius):
+            if let value = scaled(celsius, by: 100, in: 700...3000) {
+                await set(ThermostatCluster.id, [ThermostatCluster.Attribute.occupiedHeatingSetpoint: .signed(Int64(value))])
+            }
+        case .coolingSetpoint(let celsius):
+            if let value = scaled(celsius, by: 100, in: 1600...3200) {
+                await set(ThermostatCluster.id, [ThermostatCluster.Attribute.occupiedCoolingSetpoint: .signed(Int64(value))])
+            }
+        case .thermostatMode(let mode): await set(ThermostatCluster.id, [ThermostatCluster.Attribute.systemMode: .unsigned(UInt64(mode))])
+        case .locked(let locked):
+            // LockState: not fully locked 0, locked 1, unlocked 2.
+            await set(DoorLockCluster.id, [DoorLockCluster.Attribute.lockState: .unsigned(locked.map { $0 ? 1 : 2 } ?? 0)])
         case .battery(let percent):
             // BatPercentRemaining is in half percents; the charge level warns below 20 % and is critical below 10 %.
             let clamped = UInt64(min(percent, 100))
             await power?.set([PowerSourceCluster.Attribute.batPercentRemaining: .unsigned(clamped * 2),
                               PowerSourceCluster.Attribute.batChargeLevel: .unsigned(clamped < 10 ? 2 : clamped < 20 ? 1 : 0)])
         }
+    }
+
+    /// Reports a button press as the Switch cluster's events (Application Clusters §1.13.7).
+    public func press(_ press: ButtonPress, part: Int = 0) async {
+        guard let cluster = cluster(SwitchCluster.id, part: part) else { return }
+        typealias E = SwitchCluster.Event
+        let pressed = TLVValue.structure([.field(0, .unsigned(1))])
+        let released = TLVValue.structure([.field(0, .unsigned(1))])
+        await cluster.set(SwitchCluster.Attribute.currentPosition, .unsigned(1))
+        await cluster.emit(E.initialPress, data: pressed)
+        switch press {
+        case .single, .double:
+            let count: UInt64 = press == .single ? 1 : 2
+            if count == 2 {
+                await cluster.emit(E.shortRelease, data: released)
+                await cluster.emit(E.multiPressOngoing, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(2))]))
+            }
+            await cluster.emit(E.shortRelease, data: released)
+            await cluster.emit(E.multiPressComplete, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(count))]))
+        case .long:
+            await cluster.emit(E.longPress, data: pressed)
+            await cluster.emit(E.longRelease, data: released)
+        }
+        await cluster.set(SwitchCluster.Attribute.currentPosition, .unsigned(0))
     }
 
     /// Whether the bridge can reach the device (Bridged Device Basic Information's Reachable, Core §9.13.5.1).
