@@ -210,6 +210,17 @@ struct FileStorageTests {
 }
 
 struct ResumptionTests {
+    /// HKDF-SHA256 computed apart (Python's hmac), salted with the resumed ticket's id as connectedhomeip salts it.
+    @Test func derivesAResumedSessionsKeysFromTheResumedTicketsID() throws {
+        let ticket = try CASE.ResumptionTicket(tlv: .structure([
+            .field(0, .bytes([UInt8](repeating: 3, count: 16))), .field(1, .bytes([UInt8](repeating: 1, count: 32))),
+            .field(2, .unsigned(0x42)), .field(3, .unsigned(0x43)), .field(5, .array([])),
+        ]))
+        let keys = CASE.resumedKeys(ticket, initiatorRandom: [UInt8](repeating: 2, count: 32))
+        #expect(keys.initiatorToResponder + keys.responderToInitiator + keys.attestationChallenge
+            == hex("b81dbb5799efbbff23d2433b4668d4bb0bd7c9f6d7bcdcfbf188694dec874b819e0c4b2f9b2b2ee684afc46705f9ccb5"))
+    }
+
     @Test func resumesAfterTheNodeRestartsAndKeepsOneTicketPerPeer() async throws {
         let fixture = try await CommissioningFixture()
         _ = try await fixture.commissioner.commission(.memory("node"), passcode: CommissioningFixture.passcode, nodeID: 0x42)

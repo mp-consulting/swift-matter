@@ -63,18 +63,23 @@ public enum CASE {
         }
     }
 
-    /// Installs a resumed session: its keys come from the ticket's secret and the new resumption id (Core §4.14.2.6.7),
-    /// its identity from the ticket.
-    static func installResumed(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], newID: [UInt8], localSessionID: UInt16,
+    /// Installs a resumed session: its keys from `resumedKeys`, its identity from the ticket.
+    static func installResumed(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], localSessionID: UInt16,
                                peerSessionID: UInt16, peer: PeerAddress, isInitiator: Bool, peerParameters: SessionParameters,
                                layer: MessageLayer) async throws -> SessionInfo {
-        let keys = SessionKeys(secret: ticket.sharedSecret, salt: initiatorRandom + newID, info: Array("SessionResumptionKeys".utf8))
+        let keys = resumedKeys(ticket, initiatorRandom: initiatorRandom)
         let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: ticket.fabricIndex,
                                peerNodeID: ticket.peerNodeID, localNodeID: ticket.localNodeID, caseAuthenticatedTags: ticket.caseAuthenticatedTags,
                                attestationChallenge: keys.attestationChallenge, peerAddress: peer)
         return try await layer.addSecureSession(
             info: info, encryptKey: isInitiator ? keys.initiatorToResponder : keys.responderToInitiator,
             decryptKey: isInitiator ? keys.responderToInitiator : keys.initiatorToResponder, peerParameters: peerParameters)
+    }
+
+    /// A resumed session's keys (Core §4.14.2.6.7), salted with the initiator's random and the id of the ticket Sigma1
+    /// resumes, not the one Sigma2_Resume issues: connectedhomeip derives them so, and so does Apple Home.
+    static func resumedKeys(_ ticket: ResumptionTicket, initiatorRandom: [UInt8]) -> SessionKeys {
+        SessionKeys(secret: ticket.sharedSecret, salt: initiatorRandom + ticket.id, info: Array("SessionResumptionKeys".utf8))
     }
 
     /// A resumption key: S1RK, S2RK or the resumed session keys, from the shared secret, the initiator's random and a
@@ -177,7 +182,7 @@ public enum CASE {
     /// Runs the responder on an unsecured exchange whose first message was Sigma1.
     static func respond(on exchange: Exchange, sigma1: Message, fabrics: FabricTable, resumptions: ResumptionStore, logger: Logger) async {
         do {
-            try await runResponder(exchange, sigma1: sigma1, fabrics: fabrics, resumptions: resumptions)
+            try await runResponder(exchange, sigma1: sigma1, fabrics: fabrics, resumptions: resumptions, logger: logger)
         } catch let error as CASEError {
             logger.debug("CASE with \(exchange.initialSession.peerAddress) failed: \(error)")
             try? await exchange.sendStatus(error == .noSharedRoot ? .noSharedTrustRoots : .invalidParameter)
@@ -187,7 +192,8 @@ public enum CASE {
         }
     }
 
-    private static func runResponder(_ exchange: Exchange, sigma1: Message, fabrics: FabricTable, resumptions: ResumptionStore) async throws {
+    private static func runResponder(_ exchange: Exchange, sigma1: Message, fabrics: FabricTable, resumptions: ResumptionStore,
+                                     logger: Logger) async throws {
         let layer = exchange.layer
         let msg1 = sigma1.payload
         let fields = try TLVStruct(decoding: msg1)
@@ -208,7 +214,10 @@ public enum CASE {
                 .open(mic, nonce: resume1Nonce)) != nil {
                 try await resume(exchange, ticket: ticket, initiatorRandom: initiatorRandom, initiatorSessionID: initiatorSessionID,
                                  peerParameters: SessionParameters(tlv: fields[5]), resumptions: resumptions)
+                logger.debug("CASE with \(exchange.initialSession.peerAddress): resumed node \(zeroPadded(ticket.peerNodeID, width: 16, radix: 16))'s session on fabric \(ticket.fabricIndex ?? 0)")
                 return
+            } else {
+                logger.debug("CASE with \(exchange.initialSession.peerAddress): no ticket resumes it, establishing a new session")
             }
         default: throw CASEError.invalidMessage
         }
@@ -251,6 +260,7 @@ public enum CASE {
                                      peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
         await resumptions.put(ResumptionTicket(id: resumptionID, sharedSecret: shared, session: info))
         try await exchange.sendStatus(.sessionEstablished)
+        logger.debug("CASE with \(exchange.initialSession.peerAddress): node \(zeroPadded(info.peerNodeID, width: 16, radix: 16)) on fabric \(fabric.index)")
     }
 
     /// Answers a valid resumption with Sigma2_Resume and installs the resumed session once the initiator confirms it.
@@ -269,7 +279,7 @@ public enum CASE {
         guard finished.payloadHeader.opcode == SecureChannelOpcode.statusReport.rawValue,
               try StatusReport(decoding: finished.payload) == .sessionEstablished
         else { throw CASEError.invalidMessage }
-        _ = try await installResumed(ticket, initiatorRandom: initiatorRandom, newID: newID, localSessionID: localSessionID,
+        _ = try await installResumed(ticket, initiatorRandom: initiatorRandom, localSessionID: localSessionID,
                                      peerSessionID: initiatorSessionID, peer: exchange.initialSession.peerAddress, isInitiator: false,
                                      peerParameters: peerParameters, layer: layer)
         await resumptions.put(ticket.renewed(newID))
@@ -376,7 +386,7 @@ public enum CASE {
                 .open(try fields.bytes(2), nonce: resume2Nonce)) != nil
         else { throw CASEError.invalidMessage }
         try await exchange.sendStatus(.sessionEstablished)
-        let session = try await installResumed(ticket, initiatorRandom: initiatorRandom, newID: newID, localSessionID: localSessionID,
+        let session = try await installResumed(ticket, initiatorRandom: initiatorRandom, localSessionID: localSessionID,
                                                peerSessionID: peerSessionID, peer: peer, isInitiator: true,
                                                peerParameters: SessionParameters(tlv: fields[4]), layer: layer)
         return (session, ticket.renewed(newID))

@@ -58,7 +58,7 @@ case "$command" in
         fi
         "${SWIFT[@]}" build --scratch-path "$SCRATCH" --product matter-bridge-demo
         work=$(mktemp -d)
-        "$SCRATCH/debug/matter-bridge-demo" --storage "$work/demo" --passcode 20202021 --discriminator 3840 > "$work/demo.log" 2>&1 &
+        "$SCRATCH/debug/matter-bridge-demo" --storage "$work/demo" --passcode 20202021 --discriminator 3840 --verbose > "$work/demo.log" 2>&1 &
         demo=$!
         trap 'kill $demo 2>/dev/null; rm -rf "$work"' EXIT
         # Until the node logs its open window (standard error, unbuffered): it is listening and advertising.
