@@ -205,7 +205,8 @@ struct BridgeTests {
         let (_, events) = try await fixture.base.commissioner.client.read([], events: [EventPath(endpoint: 4, cluster: SwitchCluster.id)],
                                                                          session: fixture.session)
         let ids = events.compactMap { if case .data(let record) = $0 { record.event } else { nil } }
-        #expect(ids == [SwitchCluster.Event.initialPress, SwitchCluster.Event.shortRelease, SwitchCluster.Event.multiPressOngoing,
+        #expect(ids == [SwitchCluster.Event.initialPress, SwitchCluster.Event.shortRelease, SwitchCluster.Event.initialPress,
+                        SwitchCluster.Event.multiPressOngoing,
                         SwitchCluster.Event.shortRelease, SwitchCluster.Event.multiPressComplete])
     }
 }

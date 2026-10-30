@@ -136,9 +136,12 @@ public actor MatterNode {
         }
         await fabrics.onChange { await advertise($0) }
         let layer = layer
-        await commissioning.onFabricRemoved { index in
-            await layer.removeSessions { $0.fabricIndex == index }
+        await commissioning.onFabricRemoved { index, delay in
             await resumptions.removeFabric(index)
+            Task {
+                if delay > .zero { try? await Task.sleep(for: delay) }
+                await layer.removeSessions { $0.fabricIndex == index }
+            }
         }
         await advertise(await fabrics.all)
 

@@ -225,11 +225,11 @@ public actor BridgedDevice {
             let value = scaled(celsius, by: 100, in: -27315...32767).map { TLVValue.signed(Int64($0)) } ?? .null
             await set(ThermostatCluster.id, [ThermostatCluster.Attribute.localTemperature: value])
         case .heatingSetpoint(let celsius):
-            if let value = scaled(celsius, by: 100, in: 700...3000) {
+            if let value = scaled(celsius, by: 100, in: Double(DeviceClusters.heatingRange.lowerBound)...Double(DeviceClusters.heatingRange.upperBound)) {
                 await set(ThermostatCluster.id, [ThermostatCluster.Attribute.occupiedHeatingSetpoint: .signed(Int64(value))])
             }
         case .coolingSetpoint(let celsius):
-            if let value = scaled(celsius, by: 100, in: 1600...3200) {
+            if let value = scaled(celsius, by: 100, in: Double(DeviceClusters.coolingRange.lowerBound)...Double(DeviceClusters.coolingRange.upperBound)) {
                 await set(ThermostatCluster.id, [ThermostatCluster.Attribute.occupiedCoolingSetpoint: .signed(Int64(value))])
             }
         case .thermostatMode(let mode): await set(ThermostatCluster.id, [ThermostatCluster.Attribute.systemMode: .unsigned(UInt64(mode))])
@@ -248,22 +248,24 @@ public actor BridgedDevice {
     public func press(_ press: ButtonPress, part: Int = 0) async {
         guard let cluster = cluster(SwitchCluster.id, part: part) else { return }
         typealias E = SwitchCluster.Event
-        let pressed = TLVValue.structure([.field(0, .unsigned(1))])
-        let released = TLVValue.structure([.field(0, .unsigned(1))])
+        // NewPosition or PreviousPosition: the pressed position, 1.
+        let position = TLVValue.structure([.field(0, .unsigned(1))])
         await cluster.set(SwitchCluster.Attribute.currentPosition, .unsigned(1))
-        await cluster.emit(E.initialPress, data: pressed)
+        await cluster.emit(E.initialPress, data: position)
         switch press {
-        case .single, .double:
-            let count: UInt64 = press == .single ? 1 : 2
-            if count == 2 {
-                await cluster.emit(E.shortRelease, data: released)
-                await cluster.emit(E.multiPressOngoing, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(2))]))
-            }
-            await cluster.emit(E.shortRelease, data: released)
-            await cluster.emit(E.multiPressComplete, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(count))]))
         case .long:
-            await cluster.emit(E.longPress, data: pressed)
-            await cluster.emit(E.longRelease, data: released)
+            await cluster.emit(E.longPress, data: position)
+            await cluster.emit(E.longRelease, data: position)
+        case .single:
+            await cluster.emit(E.shortRelease, data: position)
+            await cluster.emit(E.multiPressComplete, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(1))]))
+        case .double:
+            // The second press starts again, then counts as the second of a multi-press (§1.13.7).
+            await cluster.emit(E.shortRelease, data: position)
+            await cluster.emit(E.initialPress, data: position)
+            await cluster.emit(E.multiPressOngoing, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(2))]))
+            await cluster.emit(E.shortRelease, data: position)
+            await cluster.emit(E.multiPressComplete, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(2))]))
         }
         await cluster.set(SwitchCluster.Attribute.currentPosition, .unsigned(0))
     }

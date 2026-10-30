@@ -25,12 +25,42 @@ public enum CASE {
         public var localNodeID: NodeID
         public var fabricIndex: FabricIndex?
         public var caseAuthenticatedTags: [UInt32]
+
+        init(id: [UInt8], sharedSecret: [UInt8], session: SessionInfo) {
+            self.id = id
+            self.sharedSecret = sharedSecret
+            peerNodeID = session.peerNodeID
+            localNodeID = session.localNodeID
+            fabricIndex = session.fabricIndex
+            caseAuthenticatedTags = session.caseAuthenticatedTags
+        }
+
+        /// The same session's ticket under a new resumption id.
+        func renewed(_ id: [UInt8]) -> ResumptionTicket {
+            var next = self
+            next.id = id
+            return next
+        }
+    }
+
+    /// Installs a resumed session: its keys come from the ticket's secret and the new resumption id (Core §4.14.2.6.7),
+    /// its identity from the ticket.
+    static func installResumed(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], newID: [UInt8], localSessionID: UInt16,
+                               peerSessionID: UInt16, peer: PeerAddress, isInitiator: Bool, peerParameters: SessionParameters,
+                               layer: MessageLayer) async throws -> SessionInfo {
+        let keys = SessionKeys(secret: ticket.sharedSecret, salt: initiatorRandom + newID, info: Array("SessionResumptionKeys".utf8))
+        let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: ticket.fabricIndex,
+                               peerNodeID: ticket.peerNodeID, localNodeID: ticket.localNodeID, caseAuthenticatedTags: ticket.caseAuthenticatedTags,
+                               attestationChallenge: keys.attestationChallenge, peerAddress: peer)
+        return try await layer.addSecureSession(
+            info: info, encryptKey: isInitiator ? keys.initiatorToResponder : keys.responderToInitiator,
+            decryptKey: isInitiator ? keys.responderToInitiator : keys.initiatorToResponder, peerParameters: peerParameters)
     }
 
     /// A resumption key: S1RK, S2RK or the resumed session keys, from the shared secret, the initiator's random and a
     /// resumption id (Core §4.14.2.6).
-    static func resumptionKey(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], id: [UInt8], info: String, length: Int = 16) -> [UInt8] {
-        MatterCrypto.kdf(key: ticket.sharedSecret, salt: initiatorRandom + id, info: Array(info.utf8), length: length)
+    static func resumptionKey(_ ticket: ResumptionTicket, initiatorRandom: [UInt8], id: [UInt8], info: String) -> [UInt8] {
+        MatterCrypto.kdf(key: ticket.sharedSecret, salt: initiatorRandom + id, info: Array(info.utf8), length: 16)
     }
 
     /// What one side presents: its certificates, its operational key, and the fabric's root and IPK.
@@ -152,7 +182,8 @@ public enum CASE {
         switch (fields[6]?.bytes, fields[7]?.bytes) {
         case (nil, nil): break
         case (let id?, let mic?):
-            if let ticket = await resumptions.take(id), await fabrics.fabric(ticket.fabricIndex ?? 0) != nil,
+            // A ticket resumes only while the fabric still has the identity it was issued under.
+            if let ticket = await resumptions.take(id), await fabrics.fabric(ticket.fabricIndex ?? 0)?.nodeID == ticket.localNodeID,
                (try? AESCCM(key: resumptionKey(ticket, initiatorRandom: initiatorRandom, id: id, info: "Sigma1_Resume"))
                 .open(mic, nonce: resume1Nonce)) != nil {
                 try await resume(exchange, ticket: ticket, initiatorRandom: initiatorRandom, initiatorSessionID: initiatorSessionID,
@@ -198,8 +229,7 @@ public enum CASE {
                                peerAddress: exchange.initialSession.peerAddress)
         _ = try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: false, info: info,
                                      peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
-        await resumptions.put(ResumptionTicket(id: resumptionID, sharedSecret: shared, peerNodeID: info.peerNodeID, localNodeID: info.localNodeID,
-                                               fabricIndex: info.fabricIndex, caseAuthenticatedTags: info.caseAuthenticatedTags))
+        await resumptions.put(ResumptionTicket(id: resumptionID, sharedSecret: shared, session: info))
         try await exchange.sendStatus(.sessionEstablished)
     }
 
@@ -219,15 +249,10 @@ public enum CASE {
         guard finished.payloadHeader.opcode == SecureChannelOpcode.statusReport.rawValue,
               try StatusReport(decoding: finished.payload) == .sessionEstablished
         else { throw CASEError.invalidMessage }
-        let keys = resumptionKey(ticket, initiatorRandom: initiatorRandom, id: newID, info: "SessionResumptionKeys", length: 48)
-        let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: initiatorSessionID, fabricIndex: ticket.fabricIndex,
-                               peerNodeID: ticket.peerNodeID, localNodeID: ticket.localNodeID, caseAuthenticatedTags: ticket.caseAuthenticatedTags,
-                               attestationChallenge: Array(keys[32..<48]), peerAddress: exchange.initialSession.peerAddress)
-        try await layer.addSecureSession(info: info, encryptKey: Array(keys[16..<32]), decryptKey: Array(keys[0..<16]),
-                                         peerParameters: peerParameters)
-        var next = ticket
-        next.id = newID
-        await resumptions.put(next)
+        _ = try await installResumed(ticket, initiatorRandom: initiatorRandom, newID: newID, localSessionID: localSessionID,
+                                     peerSessionID: initiatorSessionID, peer: exchange.initialSession.peerAddress, isInitiator: false,
+                                     peerParameters: peerParameters, layer: layer)
+        await resumptions.put(ticket.renewed(newID))
     }
 
     // MARK: - Initiator
@@ -317,8 +342,7 @@ public enum CASE {
                                caseAuthenticatedTags: peerNOC.caseAuthenticatedTags, peerAddress: peer)
         let session = try await installSession(shared, ipk: identity.ipk, transcript: msg1 + msg2 + msg3, isInitiator: true, info: info,
                                                peerParameters: SessionParameters(tlv: fields[5]), layer: layer)
-        return (session, ResumptionTicket(id: resumptionID, sharedSecret: shared, peerNodeID: peerNodeID, localNodeID: info.localNodeID,
-                                          fabricIndex: identity.fabricIndex, caseAuthenticatedTags: info.caseAuthenticatedTags))
+        return (session, ResumptionTicket(id: resumptionID, sharedSecret: shared, session: session))
     }
 
     /// Checks Sigma2_Resume, confirms with SigmaFinished and installs the resumed session.
@@ -332,15 +356,10 @@ public enum CASE {
                 .open(try fields.bytes(2), nonce: resume2Nonce)) != nil
         else { throw CASEError.invalidMessage }
         try await exchange.sendStatus(.sessionEstablished)
-        let keys = resumptionKey(ticket, initiatorRandom: initiatorRandom, id: newID, info: "SessionResumptionKeys", length: 48)
-        let info = SessionInfo(kind: .case, localSessionID: localSessionID, peerSessionID: peerSessionID, fabricIndex: ticket.fabricIndex,
-                               peerNodeID: ticket.peerNodeID, localNodeID: ticket.localNodeID, caseAuthenticatedTags: ticket.caseAuthenticatedTags,
-                               attestationChallenge: Array(keys[32..<48]), peerAddress: peer)
-        let session = try await layer.addSecureSession(info: info, encryptKey: Array(keys[0..<16]), decryptKey: Array(keys[16..<32]),
-                                                       peerParameters: SessionParameters(tlv: fields[4]))
-        var next = ticket
-        next.id = newID
-        return (session, next)
+        let session = try await installResumed(ticket, initiatorRandom: initiatorRandom, newID: newID, localSessionID: localSessionID,
+                                               peerSessionID: peerSessionID, peer: peer, isInitiator: true,
+                                               peerParameters: SessionParameters(tlv: fields[4]), layer: layer)
+        return (session, ticket.renewed(newID))
     }
 }
 
@@ -363,7 +382,7 @@ public actor ResumptionStore {
     }
 
     /// Forgets the tickets of a removed fabric.
-    func removeFabric(_ index: FabricIndex) { tickets.removeAll { $0.fabricIndex == index } }
+    public func removeFabric(_ index: FabricIndex) { tickets.removeAll { $0.fabricIndex == index } }
 }
 
 /// Answers Sigma1 with the node's fabrics.

@@ -372,6 +372,10 @@ enum DeviceClusters {
 // MARK: - Thermostat (Application Clusters §4.3), Door Lock (§5.2), Switch (§1.13)
 
 extension DeviceClusters {
+    /// The setpoint limits, in hundredths of a degree (the specification's defaults, §4.3.9).
+    static let heatingRange: ClosedRange<Int64> = 700...3000
+    static let coolingRange: ClosedRange<Int64> = 1600...3200
+
     /// Hundredths of a degree from a written attribute, within the setpoint limits.
     static func setpoint(_ value: TLVValue, in range: ClosedRange<Int64>) throws -> Int64 {
         guard let raw = value.int, range.contains(raw) else { throw StatusError(.constraintError) }
@@ -383,12 +387,12 @@ extension DeviceClusters {
         var features: ThermostatCluster.Feature = []
         if heating { features.insert(.heating) }
         if cooling { features.insert(.cooling) }
-        let heat: ClosedRange<Int64> = 700...3000, cool: ClosedRange<Int64> = 1600...3200
+        let heat = heatingRange, cool = coolingRange
         var attributes: [AttributeID: TLVValue] = [
             A.localTemperature: .null,
             // Cooling and heating (4), heating only (2), cooling only (0) (§4.3.9.19).
             A.controlSequenceOfOperation: .unsigned(heating && cooling ? 4 : heating ? 2 : 0),
-            A.systemMode: .unsigned(heating ? 4 : 3),
+            A.systemMode: .unsigned(heating ? ThermostatCluster.SystemModeEnum.heat : ThermostatCluster.SystemModeEnum.cool),
         ]
         if heating {
             attributes.merge([A.occupiedHeatingSetpoint: .signed(2000), A.absMinHeatSetpointLimit: .signed(heat.lowerBound),
@@ -408,8 +412,11 @@ extension DeviceClusters {
             case A.occupiedCoolingSetpoint where cooling:
                 try await deliver(.setCoolingSetpoint(celsius: Double(try setpoint(value, in: cool)) / 100), to: handler)
             case A.systemMode:
-                // Off (0), cool (3) and heat (4) as the features allow.
-                guard let mode = value.uint, mode == 0 || mode == 3 && cooling || mode == 4 && heating else { throw StatusError(.constraintError) }
+                typealias Mode = ThermostatCluster.SystemModeEnum
+                // Off, cool and heat, as the features allow.
+                guard let mode = value.uint, mode == Mode.off || mode == Mode.cool && cooling || mode == Mode.heat && heating else {
+                    throw StatusError(.constraintError)
+                }
                 try await deliver(.setThermostatMode(UInt8(mode)), to: handler)
             default:
                 throw StatusError(.unsupportedWrite)
@@ -447,10 +454,11 @@ extension DeviceClusters {
         ])
         @Sendable func operate(_ cluster: AttributeCluster, locked: Bool, context: AccessContext) async throws -> InvokeResult {
             try await deliver(.setLocked(locked), to: handler)
-            await cluster.set(A.lockState, .unsigned(locked ? 1 : 2))
-            // LockOperation (§5.2.11.3): lock (0) or unlock (1), from a remote source (7).
+            await cluster.set(A.lockState, .unsigned(locked ? DoorLockCluster.LockStateEnum.locked : DoorLockCluster.LockStateEnum.unlocked))
+            // LockOperation (§5.2.11.3): its type, its source, the user, the fabric and the node.
             await cluster.emit(DoorLockCluster.Event.lockOperation, data: .structure([
-                .field(0, .unsigned(locked ? 0 : 1)), .field(1, .unsigned(7)), .field(2, .null),
+                .field(0, .unsigned(locked ? DoorLockCluster.LockOperationTypeEnum.lock : DoorLockCluster.LockOperationTypeEnum.unlock)),
+                .field(1, .unsigned(DoorLockCluster.OperationSourceEnum.remote)), .field(2, .null),
                 .field(3, context.fabricIndex.map { .unsigned(UInt64($0)) } ?? .null), .field(4, .unsigned(context.session.peerNodeID)),
             ]))
             return .success

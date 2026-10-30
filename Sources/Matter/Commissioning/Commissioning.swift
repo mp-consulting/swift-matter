@@ -50,7 +50,7 @@ public actor Commissioning {
     /// Told when the window opens or closes, so advertising follows.
     private var windowObservers: [@Sendable (Window, UInt16?) async -> Void] = []
     /// Told when a fabric is removed (by RemoveFabric or a fail-safe rollback), so its sessions close.
-    private var fabricRemovedObservers: [@Sendable (FabricIndex) async -> Void] = []
+    private var fabricRemovedObservers: [@Sendable (FabricIndex, Duration) async -> Void] = []
     weak var layer: MessageLayer?
 
     init(fabrics: FabricTable, accessControl: AccessControlEntries, attestation: DeviceAttestation, logger: Logger) {
@@ -63,17 +63,14 @@ public actor Commissioning {
     func setLayer(_ layer: MessageLayer) { self.layer = layer }
 
     func onWindowChange(_ observer: @escaping @Sendable (Window, UInt16?) async -> Void) { windowObservers.append(observer) }
-    func onFabricRemoved(_ observer: @escaping @Sendable (FabricIndex) async -> Void) { fabricRemovedObservers.append(observer) }
+    /// Observers learn the removed fabric at once, with how long its sessions should be kept so a response can go out.
+    func onFabricRemoved(_ observer: @escaping @Sendable (FabricIndex, Duration) async -> Void) { fabricRemovedObservers.append(observer) }
 
     /// Removes a fabric with its ACL entries; its sessions close after `delay` (so a response can go out first).
     func removeFabric(_ index: FabricIndex, closingSessionsAfter delay: Duration = .zero) async throws {
         try await fabrics.remove(index)
         await accessControl.removeFabric(index)
-        let observers = fabricRemovedObservers
-        Task {
-            if delay > .zero { try? await Task.sleep(for: delay) }
-            for observer in observers { await observer(index) }
-        }
+        for observer in fabricRemovedObservers { await observer(index, delay) }
     }
 
     // MARK: - Window
