@@ -16,6 +16,9 @@ public struct NodeConfiguration: Sendable {
     public var reliability: ReliabilityParameters
     /// How long the initial commissioning window stays open; nil keeps it open until the node is commissioned.
     public var initialWindowTimeout: Duration?
+    /// Also listens for TCP on `port` and says so (the TXT key T, SUPPORTED_TRANSPORTS), for controllers that send
+    /// large messages over it (Core §4.15).
+    public var tcp = false
 
     public init(information: NodeInformation = NodeInformation(), passcode: UInt32? = nil, discriminator: UInt16? = nil,
                 port: Int = 5540, deviceType: UInt32 = DeviceTypes.aggregator.id, attestation: DeviceAttestation? = nil,
@@ -96,7 +99,12 @@ public actor MatterNode {
         fabrics = await FabricTable(storage: storage)
         accessControl = await AccessControlEntries(storage: storage)
         commissioning = Commissioning(fabrics: fabrics, accessControl: accessControl, attestation: attestation, logger: logger)
-        layer = MessageLayer(transport: transport ?? UDPTransport(port: configuration.port), reliability: configuration.reliability)
+        var parameters = SessionParameters.default
+        if configuration.tcp { parameters.supportedTransports = .tcpServer }
+        let defaultTransport: any MatterTransport = configuration.tcp
+            ? CombinedTransport(datagrams: UDPTransport(port: configuration.port), streams: TCPTransport(port: configuration.port))
+            : UDPTransport(port: configuration.port)
+        layer = MessageLayer(transport: transport ?? defaultTransport, parameters: parameters, reliability: configuration.reliability)
         dataModel = DataModel()
         interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl)
 

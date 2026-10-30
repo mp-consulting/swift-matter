@@ -37,7 +37,8 @@ development commands.
 ## Limits
 
 - Matter over IP only: no Bluetooth (BTP), Thread or Wi-Fi PAF commissioning; the node must already be on the network.
-- No group communication (MaxGroupsPerFabric is 0), no TCP transport, no OTA, no ICD (sleepy device) support.
+- No group communication (MaxGroupsPerFabric is 0), no OTA, no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`)
+  is off by default.
 - Scenes are reported with an empty table; level and color transitions complete at once.
 
 ## Certification

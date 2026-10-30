@@ -28,7 +28,7 @@ struct MatterRecords: Sendable {
 
     static func sessionTXT(_ parameters: SessionParameters) -> [(String, String)] {
         [("SII", String(parameters.idleInterval.milliseconds)), ("SAI", String(parameters.activeInterval.milliseconds)),
-         ("SAT", String(parameters.activeThreshold.milliseconds)), ("T", "0")]
+         ("SAT", String(parameters.activeThreshold.milliseconds)), ("T", String(parameters.supportedTransports.rawValue))]
     }
 
     /// Every record, grouped as answers: what a query may be answered with.

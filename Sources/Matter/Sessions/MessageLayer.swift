@@ -95,9 +95,19 @@ public actor MessageLayer {
     }
 
     public func start() async throws {
+        await transport.onDisconnect { [weak self] peer in await self?.disconnected(peer) }
         try await transport.start { [weak self] bytes, peer in
             await self?.receive(bytes, from: peer)
         }
+    }
+
+    /// A TCP connection closed: its sessions and exchanges are unusable (Core §4.15.2.2).
+    private func disconnected(_ peer: PeerAddress) async {
+        await removeSessions { $0.peerAddress == peer }
+        for key in exchanges.keys {
+            if case .unsecured(let session) = key.session, session.peer == peer { await tearDown(key, error: .sessionGone) }
+        }
+        unsecuredSessions = unsecuredSessions.filter { $0.key.peer != peer }
     }
 
     public func stop() async {
@@ -215,8 +225,10 @@ public actor MessageLayer {
         return exchange
     }
 
-    /// Sends a message on an exchange; reliable unless it is a standalone acknowledgement.
-    func send(on key: ExchangeKey, protocolID: ProtocolID, opcode: UInt8, payload: [UInt8], reliable: Bool = true) async throws {
+    /// Sends a message on an exchange; reliable unless it is a standalone acknowledgement. Over TCP the connection is
+    /// reliable, so MRP stays off: no R flag, no retransmission (Core §4.15).
+    func send(on key: ExchangeKey, protocolID: ProtocolID, opcode: UInt8, payload: [UInt8], reliable requested: Bool = true) async throws {
+        let reliable = requested && !(peer(of: key.session)?.isStream ?? false)
         guard var state = exchanges[key], !state.closed else { throw ExchangeError.closed }
         // One reliable message in flight per exchange (Core §4.12.5.1).
         if reliable, let pending = state.retransmission {
@@ -246,6 +258,13 @@ public actor MessageLayer {
     private func waitForAck(of key: ExchangeKey, counter: UInt32) async {
         while let pending = exchanges[key]?.retransmission, pending.counter == counter {
             await pending.task.value
+        }
+    }
+
+    private func peer(of session: SessionRef) -> PeerAddress? {
+        switch session {
+        case .secure(let id): secureSessions[id]?.info.peerAddress
+        case .unsecured(let key): key.peer
         }
     }
 

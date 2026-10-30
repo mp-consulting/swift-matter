@@ -32,6 +32,8 @@ let package = Package(
             name: "MatterBridgeDemo",
             dependencies: ["Matter", .product(name: "Logging", package: "swift-log")]
         ),
-        .testTarget(name: "MatterTests", dependencies: ["Matter", .product(name: "NIOCore", package: "swift-nio")]),
+        .testTarget(name: "MatterTests", dependencies: [
+            "Matter", .product(name: "NIOCore", package: "swift-nio"), .product(name: "NIOEmbedded", package: "swift-nio"),
+        ]),
     ]
 )

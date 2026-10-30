@@ -7,12 +7,21 @@ public enum PeerAddress: Hashable, Sendable, CustomStringConvertible {
     case socket(SocketAddress)
     /// An endpoint of a `MemoryNetwork`.
     case memory(String)
+    /// A TCP connection: messages to it go over that connection, without MRP (Core §4.15).
+    case stream(id: UInt64, remote: SocketAddress)
 
     public var description: String {
         switch self {
         case .socket(let address): address.description
         case .memory(let name): "memory:\(name)"
+        case .stream(let id, let remote): "tcp:\(remote)#\(id)"
         }
+    }
+
+    /// Whether the transport is reliable on its own, so MRP stays off (Core §4.12.4).
+    public var isStream: Bool {
+        if case .stream = self { return true }
+        return false
     }
 }
 
@@ -44,6 +53,12 @@ public protocol MatterTransport: Sendable {
     func start(receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) async throws
     func send(_ datagram: [UInt8], to peer: PeerAddress) async throws
     func close() async
+    /// Called with a stream peer whose connection closed; datagram transports never call it.
+    func onDisconnect(_ handler: @escaping @Sendable (PeerAddress) async -> Void) async
+}
+
+extension MatterTransport {
+    public func onDisconnect(_ handler: @escaping @Sendable (PeerAddress) async -> Void) async {}
 }
 
 /// UDP over IPv6 (dual-stack, so IPv4 peers work too) on Matter's port, 5540 by default.
