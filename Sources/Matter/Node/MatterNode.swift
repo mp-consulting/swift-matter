@@ -101,7 +101,7 @@ public actor MatterNode {
         interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl)
 
         let root = await RootClusters.make(information: information, commissioning: commissioning, fabrics: fabrics,
-                                           accessControl: accessControl, attestation: attestation, startTime: .now)
+                                           accessControl: accessControl, attestation: attestation, startTime: .now, storage: storage)
         try await dataModel.add(Endpoint(number: 0, deviceTypes: [DeviceTypes.rootNode], clusters: root))
     }
 

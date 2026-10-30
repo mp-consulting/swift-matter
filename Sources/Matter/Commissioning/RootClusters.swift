@@ -1,4 +1,6 @@
 import Foundation
+import NIOCore
+import NIOPosix
 
 /// What the Basic Information cluster says about the node.
 public struct NodeInformation: Sendable {
@@ -35,9 +37,10 @@ public struct NodeInformation: Sendable {
 /// The clusters of the root endpoint (Device Library §2.1): what commissioning and administration use.
 enum RootClusters {
     static func make(information: NodeInformation, commissioning: Commissioning, fabrics: FabricTable,
-                     accessControl: AccessControlEntries, attestation: DeviceAttestation, startTime: ContinuousClock.Instant) async -> [any ClusterHandler] {
+                     accessControl: AccessControlEntries, attestation: DeviceAttestation, startTime: ContinuousClock.Instant,
+                     storage: any MatterStorage) async -> [any ClusterHandler] {
         [
-            await basicInformation(information),
+            await basicInformation(information, storage: storage),
             await generalCommissioning(commissioning),
             await operationalCredentials(commissioning: commissioning, fabrics: fabrics, accessControl: accessControl,
                                          attestation: attestation),
@@ -51,14 +54,16 @@ enum RootClusters {
 
     // MARK: - Basic Information (Core §11.1)
 
-    static func basicInformation(_ info: NodeInformation) async -> AttributeCluster {
+    static func basicInformation(_ info: NodeInformation, storage: any MatterStorage) async -> AttributeCluster {
         typealias A = BasicInformationCluster.Attribute
         typealias Minima = BasicInformationCluster.CapabilityMinimaStruct
-        return AttributeCluster(BasicInformationCluster.definition, attributes: [
+        // NodeLabel and Location are written by controllers and survive restarts.
+        let stored = await storage.value(for: StorageKey.basicInformation).flatMap { try? TLVStruct(decoding: $0) }
+        let cluster = AttributeCluster(BasicInformationCluster.definition, attributes: [
             A.dataModelRevision: .unsigned(UInt64(SpecificationVersion.dataModelRevision)),
             A.vendorName: .utf8(info.vendorName), A.vendorId: .unsigned(UInt64(info.vendorID)),
             A.productName: .utf8(info.productName), A.productId: .unsigned(UInt64(info.productID)),
-            A.nodeLabel: .utf8(info.nodeLabel), A.location: .utf8("XX"),
+            A.nodeLabel: .utf8(stored?[1]?.string ?? info.nodeLabel), A.location: .utf8(stored?[2]?.string ?? "XX"),
             A.hardwareVersion: .unsigned(UInt64(info.hardwareVersion)), A.hardwareVersionString: .utf8(info.hardwareVersionString),
             A.softwareVersion: .unsigned(UInt64(info.softwareVersion)), A.softwareVersionString: .utf8(info.softwareVersionString),
             A.serialNumber: .utf8(info.serialNumber), A.uniqueId: .utf8(info.uniqueID),
@@ -66,6 +71,25 @@ enum RootClusters {
             A.specificationVersion: .unsigned(UInt64(SpecificationVersion.specificationVersion)),
             A.maxPathsPerInvoke: .unsigned(1), A.configurationVersion: .unsigned(1),
         ])
+        await cluster.onWrite { cluster, attribute, value, _ in
+            guard let text = value.string else { throw StatusError(.constraintError) }
+            var label = await cluster.value(A.nodeLabel)?.string ?? ""
+            var location = await cluster.value(A.location)?.string ?? "XX"
+            switch attribute {
+            case A.nodeLabel:
+                guard text.utf8.count <= 32 else { throw StatusError(.constraintError) }
+                label = text
+            case A.location:
+                // An ISO 3166-1 alpha-2 code, or XX (Core §11.1.5.7).
+                guard text.utf8.count == 2 else { throw StatusError(.constraintError) }
+                location = text
+            default:
+                throw StatusError(.unsupportedWrite)
+            }
+            try? await storage.setValue(TLVEncoder.encode(.structure([.field(1, .utf8(label)), .field(2, .utf8(location))])),
+                                        for: StorageKey.basicInformation)
+        }
+        return cluster
     }
 
     // MARK: - General Commissioning (Core §11.10)
@@ -296,9 +320,9 @@ enum RootClusters {
         typealias A = GeneralDiagnosticsCluster.Attribute
         typealias C = GeneralDiagnosticsCluster.Command
         let cluster = AttributeCluster(GeneralDiagnosticsCluster.definition, attributes: [
-            A.networkInterfaces: .array([]), A.rebootCount: .unsigned(0), A.bootReason: .unsigned(0),
-            A.testEventTriggersEnabled: .bool(false),
+            A.rebootCount: .unsigned(0), A.bootReason: .unsigned(0), A.testEventTriggersEnabled: .bool(false),
         ])
+        await cluster.provide(A.networkInterfaces) { _ in networkInterfaces() }
         await cluster.provide(A.upTime) { _ in .unsigned(UInt64((ContinuousClock.now - startTime).components.seconds)) }
         await cluster.handle(C.testEventTrigger) { _, _, _ in throw StatusError(.constraintError) }
         await cluster.handle(C.timeSnapshot) { _, _, _ in
@@ -306,6 +330,29 @@ enum RootClusters {
             return .response(C.timeSnapshotResponse, .structure([.field(0, .unsigned(system)), .field(1, .unsigned(currentMilliseconds()))]))
         }
         return cluster
+    }
+
+    /// NetworkInterface structs (Core §11.12.6.4) of the host's multicast-capable interfaces.
+    static func networkInterfaces() -> TLVValue {
+        let devices = (try? System.enumerateDevices()) ?? []
+        let names = Set(devices.filter { $0.multicastSupported && $0.address?.ipAddress.map(MDNSAdvertiser.isRoutable) == true }.map(\.name))
+        return .array(names.sorted().map { name in
+            let addresses = devices.filter { $0.name == name }.compactMap(\.address)
+            func bytes(_ family: NIOBSDSocket.ProtocolFamily) -> [TLVElement] {
+                addresses.filter { $0.protocol == family }.compactMap { address -> TLVElement? in
+                    switch address {
+                    case .v4(let v4): TLVElement(.bytes(withUnsafeBytes(of: v4.address.sin_addr) { Array($0) }))
+                    case .v6(let v6): TLVElement(.bytes(withUnsafeBytes(of: v6.address.sin6_addr) { Array($0) }))
+                    default: nil
+                    }
+                }
+            }
+            return TLVElement(.structure([
+                .field(0, .utf8(String(name.prefix(32)))), .field(1, .bool(true)), .field(2, .null), .field(3, .null),
+                .field(4, .bytes([UInt8](repeating: 0, count: 6))), .field(5, .array(bytes(.inet))), .field(6, .array(bytes(.inet6))),
+                .field(7, .unsigned(2)), // Ethernet
+            ]))
+        })
     }
 
     // MARK: - Administrator Commissioning (Core §11.19)
@@ -337,12 +384,13 @@ enum RootClusters {
             guard await commissioning.windowStatus == .closed, await !commissioning.isFailSafeArmed else {
                 throw StatusError(.failure, clusterStatus: 2)
             }
-            guard (180...900).contains(timeout), discriminator <= 0x0FFF, PBKDF2.iterationRange.contains(Int(iterations)),
+            guard (180...900).contains(timeout), discriminator <= 0x0FFF, let iterationCount = Int(exactly: iterations),
+                  PBKDF2.iterationRange.contains(iterationCount),
                   (16...32).contains(salt.count), let verifier = try? SPAKE2Plus.Verifier(serialized: verifierBytes)
             else { throw StatusError(.failure, clusterStatus: 3) } // PAKEParameterError
             var vendor: UInt16?
             if let index = context.fabricIndex { vendor = await commissioning.fabrics.fabric(index)?.vendorID }
-            await commissioning.open(.enhanced, verifier: PASEVerifier(verifier: verifier, salt: salt, iterations: Int(iterations)),
+            await commissioning.open(.enhanced, verifier: PASEVerifier(verifier: verifier, salt: salt, iterations: iterationCount),
                                      discriminator: discriminator, timeout: .seconds(Int(timeout)), adminFabric: context.fabricIndex,
                                      adminVendor: vendor)
             return .success

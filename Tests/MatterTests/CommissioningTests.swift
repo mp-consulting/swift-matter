@@ -1,3 +1,4 @@
+import Foundation
 import Crypto
 import Testing
 @testable import Matter
@@ -165,5 +166,23 @@ struct CommissioningTests {
         let value = try await fixture.commissioner.client.read(endpoint: 0, cluster: BasicInformationCluster.id,
                                                                attribute: BasicInformationCluster.Attribute.vendorId, session: session.localSessionID)
         #expect(value == .unsigned(0xFFF1))
+    }
+}
+
+struct FileStorageTests {
+    @Test func storesReplacesAndRemovesValues() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("swift-matter-\(UInt64.random(in: 0...UInt64.max))")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = try FileStorage(directory: directory)
+        try await storage.setValue([1, 2, 3], for: "fabrics")
+        #expect(await storage.value(for: "fabrics") == [1, 2, 3])
+        try await storage.setValue([4], for: "fabrics")
+        #expect(await storage.value(for: "fabrics") == [4])
+        // Keys cannot leave the directory.
+        try await storage.setValue([5], for: "../escape")
+        #expect(!FileManager.default.fileExists(atPath: directory.deletingLastPathComponent().appendingPathComponent("escape").path))
+        #expect(await storage.value(for: "../escape") == [5])
+        try await storage.setValue(nil, for: "fabrics")
+        #expect(await storage.value(for: "fabrics") == nil)
     }
 }

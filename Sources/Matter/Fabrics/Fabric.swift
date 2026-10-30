@@ -95,9 +95,10 @@ public enum CertificateChain {
         guard rcac.rcacID != nil, rcac.basicConstraints?.isCA == true, rcac.isSigned(by: rcac),
               rcac.keyUsage?.contains(.keyCertSign) == true
         else { throw fail("root") }
+        // A NOC is for TLS-style client and server authentication (Core §6.5.12).
         guard let nodeID = noc.nodeID, let fabricID = noc.fabricID, fabricID != 0,
               (1...0xFFFF_FFEF_FFFF_FFFF).contains(nodeID), noc.basicConstraints?.isCA == false,
-              noc.keyUsage?.contains(.digitalSignature) == true
+              noc.keyUsage?.contains(.digitalSignature) == true, Set(noc.extendedKeyUsage ?? []).isSuperset(of: [1, 2])
         else { throw fail("operational certificate") }
         if let rootFabric = rcac.fabricID, rootFabric != fabricID { throw fail("fabric") }
         if let icac {

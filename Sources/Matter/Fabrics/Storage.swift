@@ -48,7 +48,11 @@ public actor FileStorage: MatterStorage {
         }
         let temporary = file.appendingPathExtension("tmp")
         FileManager.default.createFile(atPath: temporary.path, contents: Data(value), attributes: [.posixPermissions: 0o600])
-        _ = try FileManager.default.replaceItemAt(file, withItemAt: temporary)
+        if FileManager.default.fileExists(atPath: file.path) {
+            _ = try FileManager.default.replaceItemAt(file, withItemAt: temporary)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: file)
+        }
     }
 }
 
@@ -59,5 +63,6 @@ public enum StorageKey {
     public static let setup = "setup"
     public static let attestation = "attestation"
     public static let uniqueID = "unique-id"
+    public static let basicInformation = "basic-information"
     public static let bridgeEndpoints = "bridge-endpoints"
 }
