@@ -12,7 +12,8 @@ expose other devices as bridged Matter endpoints. Written against the Matter 1.6
   per-fabric access control.
 - DNS-SD with a built-in mDNS responder on IPv4 and IPv6.
 - A bridge: an Aggregator with bridged lights (on/off, dimmable, color temperature, extended color), plugs, contact,
-  occupancy, temperature, humidity and light sensors, window coverings, fans, thermostats, door locks and buttons;
+  occupancy, temperature, humidity and light sensors, window coverings, closures (gates, garage doors, doors, windows),
+  fans, thermostats, door locks and buttons;
   compound devices; custom device kinds with your own clusters. Endpoint numbers are stable across restarts.
 
 ## A bridge in a few lines

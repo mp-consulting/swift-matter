@@ -9,11 +9,15 @@ import Foundation
 /// devices; anything else (a thermostat, a lock, a vendor cluster) is a kind with its own clusters.
 public struct DeviceKind: Sendable {
     public var deviceTypes: [DeviceType]
+    /// The semantic tags its device type requires on its endpoint (a Closure's kind), before a part's own.
+    public var tags: [SemanticTag]
     /// Builds the clusters; their commands go to the handler.
     public var makeClusters: @Sendable (_ handler: @escaping DeviceCommandHandler) async -> [any ClusterHandler]
 
-    public init(deviceTypes: [DeviceType], makeClusters: @escaping @Sendable (_ handler: @escaping DeviceCommandHandler) async -> [any ClusterHandler]) {
+    public init(deviceTypes: [DeviceType], tags: [SemanticTag] = [],
+                makeClusters: @escaping @Sendable (_ handler: @escaping DeviceCommandHandler) async -> [any ClusterHandler]) {
         self.deviceTypes = deviceTypes
+        self.tags = tags
         self.makeClusters = makeClusters
     }
 
@@ -104,7 +108,7 @@ public struct DeviceKind: Sendable {
     /// reported with `DeviceState.power` and `.energy`.
     public func metered() -> DeviceKind {
         let kind = self
-        return DeviceKind(deviceTypes: deviceTypes + [DeviceTypes.electricalSensor]) { handler in
+        return DeviceKind(deviceTypes: deviceTypes + [DeviceTypes.electricalSensor], tags: tags) { handler in
             await kind.makeClusters(handler) + DeviceClusters.metering()
         }
     }
@@ -187,6 +191,8 @@ public enum DeviceState: Hashable, Sendable {
     case energy(kilowattHours: Double?)
     /// A robot vacuum's state.
     case robot(RobotState)
+    /// A closure's position (nil when it does not know it), and whether it is moving.
+    case closure(ClosurePosition?, moving: Bool = false)
 }
 
 /// A press of a bridged button (Generic Switch).
@@ -316,6 +322,9 @@ public actor BridgedDevice {
         case .robot(let robot):
             await DeviceClusters.setRobot(robot, runMode: cluster(RvcRunModeCluster.id, part: part),
                                           operational: cluster(RvcOperationalStateCluster.id, part: part))
+        case .closure(let position, let moving):
+            guard let cluster = cluster(ClosureControlCluster.id, part: part) else { return }
+            await DeviceClusters.setClosure(cluster, position: position, moving: moving)
         case .battery(let percent):
             // BatPercentRemaining is in half percents; the charge level warns below 20 % and is critical below 10 %.
             let clamped = UInt64(min(percent, 100))
@@ -375,7 +384,7 @@ extension MatterNode {
             let first = index == 0
             try await add(Endpoint(number: endpoints[index],
                                    deviceTypes: part.kind.deviceTypes + (first && battery ? [DeviceTypes.powerSource] : []),
-                                   clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.tags))
+                                   clusters: partClusters[index] + (first ? power.map { [$0] } ?? [] : []), tags: part.kind.tags + part.tags))
         }
         return BridgedDevice(info: info, endpoint: 1, partEndpoints: endpoints, parts: partClusters,
                              basicInformation: await dataModel.cluster(BasicInformationCluster.id, on: 0) as? AttributeCluster, power: power)
@@ -442,11 +451,12 @@ public actor MatterBridge {
             topTypes = parts[0].kind.deviceTypes + topTypes
             topClusters = partClusters[0] + topClusters
         }
-        try await node.add(Endpoint(number: top, deviceTypes: topTypes, clusters: topClusters, parent: aggregatorEndpoint))
+        try await node.add(Endpoint(number: top, deviceTypes: topTypes, clusters: topClusters, parent: aggregatorEndpoint,
+                                    tags: parts.count == 1 ? parts[0].kind.tags + parts[0].tags : []))
         if parts.count > 1 {
             for (index, part) in parts.enumerated() {
                 try await node.add(Endpoint(number: partEndpoints[index], deviceTypes: part.kind.deviceTypes,
-                                            clusters: partClusters[index], parent: top, tags: part.tags))
+                                            clusters: partClusters[index], parent: top, tags: part.kind.tags + part.tags))
             }
         }
         let device = BridgedDevice(info: info, endpoint: top, partEndpoints: partEndpoints, parts: partClusters,

@@ -29,6 +29,9 @@ public enum DeviceCommand: Hashable, Sendable {
     case pauseCleaning
     case resumeCleaning
     case returnToDock
+    /// A closure's MoveTo: open, or fully closed.
+    case setClosureOpen(Bool)
+    case stopClosure
     case identify(seconds: UInt16)
 }
 

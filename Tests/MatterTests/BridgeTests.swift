@@ -202,6 +202,48 @@ struct BridgeTests {
             == [Operational.Event.operationCompletion, Operational.Event.operationalError])
     }
 
+    @Test func opensAndClosesAClosure() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let gate = try await fixture.bridge.add(BridgedDeviceInfo(id: "gate", name: "Gate"), kind: .closure(.gate)) { await commands.append($0) }
+        typealias A = ClosureControlCluster.Attribute
+        typealias S = ClosureControlCluster.OverallCurrentStateStruct
+        // A Closure, tagged with its kind from the Closure namespace.
+        let types = try await fixture.read(2, DescriptorCluster.id, DescriptorCluster.Attribute.deviceTypeList)
+        #expect(types.elements?.first?.value[0]?.uint == UInt64(DeviceTypes.closure.id))
+        let tags = try await fixture.read(2, DescriptorCluster.id, DescriptorCluster.Attribute.tagList)
+        #expect(tags.elements?.first?.value[1]?.uint == 0x44 && tags.elements?.first?.value[2]?.uint == UInt64(ClosureKind.gate.rawValue))
+        #expect(try await fixture.read(2, ClosureControlCluster.id, A.overallCurrentState) == .null)
+
+        await gate.update(.closure(.fullyClosed))
+        let path = CommandPath(endpoint: 2, cluster: ClosureControlCluster.id, command: ClosureControlCluster.Command.moveTo)
+        _ = try await fixture.base.commissioner.client.invoke(
+            path, fields: .structure([.field(0, .unsigned(ClosureControlCluster.TargetPositionEnum.moveToFullyOpen))]), timed: .seconds(5),
+            session: fixture.session)
+        #expect(await commands.values == [.setClosureOpen(true)])
+        #expect(try await fixture.read(2, ClosureControlCluster.id, A.mainState) == .unsigned(ClosureControlCluster.MainStateEnum.moving))
+
+        // The gate reports it opened: no longer secure, and the movement is complete.
+        await gate.update(.closure(.fullyOpened))
+        let state = try await fixture.read(2, ClosureControlCluster.id, A.overallCurrentState)
+        #expect(state[S.position] == .unsigned(ClosurePosition.fullyOpened.rawValue) && state[S.secureState] == .bool(false))
+        #expect(try await fixture.read(2, ClosureControlCluster.id, A.mainState) == .unsigned(ClosureControlCluster.MainStateEnum.stopped))
+        let (_, events) = try await fixture.base.commissioner.client.read([], events: [EventPath(endpoint: 2, cluster: ClosureControlCluster.id)],
+                                                                         session: fixture.session)
+        #expect(Set(events.compactMap { report -> EventID? in if case .data(let record) = report { record.event } else { nil } })
+            == [ClosureControlCluster.Event.secureStateChanged, ClosureControlCluster.Event.movementCompleted])
+
+        // Already open: nothing to do. Beyond the enum: a constraint error.
+        _ = try await fixture.base.commissioner.client.invoke(
+            path, fields: .structure([.field(0, .unsigned(ClosureControlCluster.TargetPositionEnum.moveToFullyOpen))]), timed: .seconds(5),
+            session: fixture.session)
+        #expect(await commands.values == [.setClosureOpen(true)])
+        let refused = try await fixture.base.commissioner.client.invoke(path, fields: .structure([.field(0, .unsigned(9))]), timed: .seconds(5),
+                                                                        session: fixture.session)
+        guard case .status(let status) = refused else { Issue.record("Expected a status"); return }
+        #expect(status.status == .constraintError)
+    }
+
     @Test func cutsLabelsByUTF8Bytes() {
         #expect("Lumière du salon éclairée ce soir".utf8Prefix(32).utf8.count <= 32)
         #expect("Lumière du salon éclairée ce soir".utf8Prefix(32) == "Lumière du salon éclairée ce ")
