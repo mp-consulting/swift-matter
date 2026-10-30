@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "Matter", targets: ["Matter"]),
         .executable(name: "matter-bridge-demo", targets: ["MatterBridgeDemo"]),
+        .executable(name: "matter-bench", targets: ["MatterBench"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
@@ -31,6 +32,11 @@ let package = Package(
         .executableTarget(
             name: "MatterBridgeDemo",
             dependencies: ["Matter", .product(name: "Logging", package: "swift-log")]
+        ),
+        // Measures a bridge node over UDP loopback (bin/dev bench).
+        .executableTarget(
+            name: "MatterBench",
+            dependencies: ["Matter", .product(name: "NIOCore", package: "swift-nio"), .product(name: "Logging", package: "swift-log")]
         ),
         .testTarget(name: "MatterTests", dependencies: [
             "Matter", .product(name: "NIOCore", package: "swift-nio"), .product(name: "NIOEmbedded", package: "swift-nio"),

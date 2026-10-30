@@ -19,6 +19,7 @@ Usage: bin/dev <command> [arguments]
   release               Build the package in release mode
   test [filter]         Run the tests, optionally only those matching a filter
   demo [args]           Run matter-bridge-demo (a bridge of virtual lights and sensors)
+  bench [args]          Run matter-bench in release: commissioning, sessions, reads, invokes, reports, memory
   interop [args]        Commission the running demo with chip-tool and drive its devices (Scripts/interop.sh)
   generate CHECKOUT     Regenerate Sources/Matter/DataModel/Definitions.swift from a matter.js checkout
   lint                  Check for trailing whitespace, tabs and stray debugging prints
@@ -44,6 +45,7 @@ case "$command" in
         fi
         ;;
     demo) "${SWIFT[@]}" run --scratch-path "$SCRATCH" matter-bridge-demo "$@" ;;
+    bench) "${SWIFT[@]}" run --scratch-path "$SCRATCH" -c release matter-bench "$@" ;;
     interop) Scripts/interop.sh "$@" ;;
     generate)
         [[ $# -eq 1 ]] || { echo "Usage: bin/dev generate <matter.js checkout>" >&2; exit 1; }
@@ -53,7 +55,7 @@ case "$command" in
         status=0
         if grep -rnE '[[:space:]]+$' Sources Tests Package.swift; then echo "Trailing whitespace above"; status=1; fi
         if grep -rn $'\t' Sources Tests Package.swift; then echo "Tabs above"; status=1; fi
-        if grep -rnE '^\s*(print|debugPrint|dump)\(' Sources --include='*.swift' | grep -v 'Sources/MatterBridgeDemo'; then
+        if grep -rnE '^\s*(print|debugPrint|dump)\(' Sources --include='*.swift' | grep -vE 'Sources/(MatterBridgeDemo|MatterBench)'; then
             echo "Debugging prints above (log through swift-log instead)"; status=1
         fi
         exit $status

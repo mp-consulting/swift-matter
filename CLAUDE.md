@@ -32,6 +32,7 @@ Clusters `23-27350-011`, Device Library `23-27351-011`). macOS 14+ and Linux. Li
 | `Sources/MatterBridgeDemo` | `matter-bridge-demo`: virtual lights, plug, thermometer and door |
 | `Scripts/generate-clusters.mjs` | Generates `Definitions.swift` from matter.js's model files (read as text, never executed) |
 | `Scripts/interop.sh` | Commissions the running demo with chip-tool and drives it |
+| `Sources/MatterBench` | `matter-bench` (`bin/dev bench`): a bridge node and a controller over UDP loopback, timing commissioning, sessions, reads, invokes and reports, and memory; results in `Benchmarks.md` |
 | `Tests/MatterTests` | Swift Testing suites; vectors from the specification, the SPAKE2+ draft, RFC 3610/7914 and matter.js's tests; end-to-end commissioning on a memory network and over UDP |
 | `bin/dev` | Development commands (`bin/dev help`) |
 
