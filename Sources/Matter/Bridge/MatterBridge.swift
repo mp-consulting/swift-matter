@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 
 /// A bridge (Core §9.12): an Aggregator endpoint whose parts are bridged devices. A device is a Bridged Node endpoint
@@ -96,12 +97,18 @@ public struct DevicePart: Sendable {
 
 /// A bridged device's identity, shown in Bridged Device Basic Information (Core §9.13).
 public struct BridgedDeviceInfo: Hashable, Sendable {
-    /// Stable across restarts: it keeps the device's endpoint numbers, and is reported as UniqueID.
+    /// Stable across restarts: it keeps the device's endpoint numbers, and is reported as UniqueID (`uniqueID`).
     public var id: String
     public var name: String
     public var vendorName: String?
     public var productName: String?
     public var serialNumber: String?
+
+    /// UniqueID holds 32 characters (Core §9.13.5): the id itself when it fits, else the first 32 hex digits of its
+    /// SHA-256, so two long ids with a common prefix stay apart.
+    public var uniqueID: String {
+        id.utf8.count <= 32 ? id : String(hexString(Array(SHA256.hash(data: Array(id.utf8)))).prefix(32))
+    }
 
     public init(id: String, name: String, vendorName: String? = nil, productName: String? = nil, serialNumber: String? = nil) {
         self.id = id
@@ -388,7 +395,7 @@ public actor MatterBridge {
         typealias A = BridgedDeviceBasicInformationCluster.Attribute
         func label(_ text: String) -> TLVValue { .utf8(String(text.prefix(32))) }
         var attributes: [AttributeID: TLVValue] = [
-            A.nodeLabel: label(info.name), A.reachable: .bool(true), A.uniqueId: label(info.id), A.configurationVersion: .unsigned(1),
+            A.nodeLabel: label(info.name), A.reachable: .bool(true), A.uniqueId: .utf8(info.uniqueID), A.configurationVersion: .unsigned(1),
         ]
         if let vendor = info.vendorName { attributes[A.vendorName] = label(vendor) }
         if let product = info.productName { attributes[A.productName] = label(product) }

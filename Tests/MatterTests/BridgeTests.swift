@@ -79,6 +79,13 @@ struct BridgeTests {
         #expect(events.count == 1)
     }
 
+    @Test func keepsUniqueIDsWithinTheirLimit() {
+        #expect(BridgedDeviceInfo(id: "lamp", name: "Lamp").uniqueID == "lamp")
+        let long = BridgedDeviceInfo(id: "PhilipsHue:00000000-0000-0000-0000-000000000001", name: "A").uniqueID
+        #expect(long.count == 32)
+        #expect(long != BridgedDeviceInfo(id: "PhilipsHue:00000000-0000-0000-0000-000000000002", name: "B").uniqueID)
+    }
+
     @Test func keepsEndpointNumbersAndNeverReusesThem() async throws {
         let fixture = try await Fixture()
         _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "a", name: "A"), kind: .onOffPlug)
