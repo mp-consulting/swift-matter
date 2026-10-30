@@ -109,6 +109,14 @@ struct BridgeTests {
         _ = try await fixture.invoke(valve.endpoint, Valve.id, Valve.Command.open)
         #expect(await commands.values == [.setValveOpen(true)])
         #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.targetState) == .unsigned(Valve.ValveStateEnum.open))
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.remainingDuration) == .null)
+        // Open for a second: OpenDuration and RemainingDuration say so, and the valve is closed when it runs out.
+        _ = try await fixture.invoke(valve.endpoint, Valve.id, Valve.Command.open, [.field(0, .unsigned(1))])
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.openDuration) == .unsigned(1))
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.remainingDuration) == .unsigned(1))
+        try await eventually(timeout: .seconds(5)) { await commands.values.last == .setValveOpen(false) }
+        #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.remainingDuration) == .null)
+        _ = try await fixture.invoke(valve.endpoint, Valve.id, Valve.Command.open)
         await valve.update(.valveOpen(true))
         #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.currentState) == .unsigned(Valve.ValveStateEnum.open))
         #expect(try await fixture.read(valve.endpoint, Valve.id, Valve.Attribute.targetState) == .null)

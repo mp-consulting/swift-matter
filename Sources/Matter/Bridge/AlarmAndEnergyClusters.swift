@@ -59,25 +59,63 @@ extension DeviceClusters {
         typealias C = ValveConfigurationAndControlCluster.Command
         typealias State = ValveConfigurationAndControlCluster.ValveStateEnum
         let cluster = AttributeCluster(ValveConfigurationAndControlCluster.definition, attributes: [
-            A.openDuration: .null, A.defaultOpenDuration: .null, A.remainingDuration: .null,
-            A.currentState: .unsigned(State.closed), A.targetState: .null,
+            A.openDuration: .null, A.defaultOpenDuration: .null, A.currentState: .unsigned(State.closed), A.targetState: .null,
         ])
+        let timer = ValveTimer()
+        // The seconds left before the valve closes by itself, while it has an OpenDuration (§4.6.7.4).
+        await cluster.provide(A.remainingDuration) { _ in await timer.remaining.map { .unsigned($0) } ?? .null }
         await cluster.onWrite { _, attribute, value, _ in
             // DefaultOpenDuration is stored as written: null, or at least a second (§4.6.7.2).
             guard attribute == A.defaultOpenDuration, value == .null || (value.uint ?? 0) >= 1 else { throw StatusError(.constraintError) }
         }
-        @Sendable func move(_ cluster: AttributeCluster, open: Bool) async throws -> InvokeResult {
+        @Sendable func move(_ cluster: AttributeCluster, open: Bool, for seconds: UInt64? = nil) async throws -> InvokeResult {
             try await deliver(.setValveOpen(open), to: handler)
             // The target until the device reports the valve there (`DeviceState.valveOpen`).
-            await cluster.set(A.targetState, .unsigned(open ? State.open : State.closed))
+            await cluster.set([A.targetState: .unsigned(open ? State.open : State.closed), A.openDuration: seconds.map { .unsigned($0) } ?? .null])
+            if let seconds {
+                await timer.start(seconds) { try? await move(cluster, open: false) }
+            } else {
+                await timer.cancel()
+            }
+            await cluster.changed([A.remainingDuration])
             return .success
         }
         await cluster.handle(C.open) { cluster, fields, _ in
-            if let duration = fields[0], duration != .null, (duration.uint ?? 0) < 1 { throw StatusError(.constraintError) }
-            return try await move(cluster, open: true)
+            // This command's duration, else DefaultOpenDuration; null leaves the valve open until closed (§4.6.8.1).
+            let given = fields[0].flatMap { $0 == .null ? nil : $0 }
+            if let given, (given.uint ?? 0) < 1 { throw StatusError(.constraintError) }
+            let fallback = await cluster.value(A.defaultOpenDuration)?.uint
+            let duration = given?.uint ?? fallback
+            return try await move(cluster, open: true, for: duration)
         }
         await cluster.handle(C.close) { cluster, _, _ in try await move(cluster, open: false) }
         return cluster
+    }
+
+    /// When an open valve closes by itself.
+    actor ValveTimer {
+        private var deadline: ContinuousClock.Instant?
+        private var task: Task<Void, Never>?
+
+        var remaining: UInt64? {
+            deadline.map { UInt64(max(0, ($0 - .now) / .seconds(1)).rounded(.up)) }
+        }
+
+        func start(_ seconds: UInt64, close: @escaping @Sendable () async -> Void) {
+            task?.cancel()
+            let deadline = ContinuousClock.now + .seconds(Int64(min(seconds, UInt64(Int64.max / 2))))
+            self.deadline = deadline
+            task = Task {
+                guard (try? await Task.sleep(until: deadline)) != nil else { return }
+                await close()
+            }
+        }
+
+        func cancel() {
+            task?.cancel()
+            task = nil
+            deadline = nil
+        }
     }
 
     /// The valve reached a state: CurrentState, TargetState cleared, and ValveStateChanged (§4.6.9.1).

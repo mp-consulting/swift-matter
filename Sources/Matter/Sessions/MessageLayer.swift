@@ -94,6 +94,9 @@ public actor MessageLayer {
     private var sessionCloseObservers: [@Sendable (SessionInfo) async -> Void] = []
     /// The node's groups, to receive group messages; without them group messages are dropped.
     private let groups: Groups?
+    /// The group message being handled: group commands run one after another, in the order they came, since
+    /// nothing answers them to keep a sender in step.
+    private var groupTail: Task<Void, Never>?
 
     public init(transport: any MatterTransport, parameters: SessionParameters = .default, reliability: ReliabilityParameters = .init(),
                 groups: Groups? = nil, logger: Logger = Logger(label: "matter.messages")) {
@@ -479,7 +482,8 @@ public actor MessageLayer {
     /// A group message (Core §4.16.3): each operational key its session id points to is tried, privacy removed
     /// first, until one authenticates it for a group mapped to that key; its counter is checked trust-first.
     private func receiveGroup(_ bytes: [UInt8], header: MessageHeader, headerLength: Int, from peer: PeerAddress) async {
-        guard let groups else { return }
+        // Group messages are private: only the P flag among the security flags (Core §4.16.2).
+        guard let groups, header.privacy, !header.isControl else { return }
         for candidate in await groups.candidates(sessionID: header.sessionID) {
             // The header's counter, source and group are readable only once the privacy is removed.
             guard let clear = try? header.privacy ? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy) : bytes,
@@ -493,7 +497,13 @@ public actor MessageLayer {
             // Control messages are MCSP's, which a trust-first node does not run (Core §4.18).
             guard !decoded.isControl, message.payloadHeader.isInitiator, let handler = handlers[message.payloadHeader.protocolID] else { return }
             let session = SessionInfo.group(group, fabric: candidate.fabric, source: source, sessionID: header.sessionID, peer: peer)
-            track { await handler.handleGroup(message, session: session) }
+            let previous = groupTail
+            let task = Task {
+                await previous?.value
+                await handler.handleGroup(message, session: session)
+            }
+            groupTail = task
+            track { await task.value }
             return
         }
     }

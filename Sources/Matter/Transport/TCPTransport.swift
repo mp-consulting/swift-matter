@@ -39,7 +39,9 @@ public final class TCPTransport: MatterTransport {
         let inbox = DatagramInbox(receive: receive)
         state.withLockedValue { $0.inbox = inbox }
         guard let port else { return }
-        let bound = try await ServerBootstrap(group: group)
+        let bound: Channel
+        do {
+            bound = try await ServerBootstrap(group: group)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(.socketOption(.so_keepalive), value: 1)
             .childChannelInitializer { [self] channel in
@@ -47,16 +49,22 @@ public final class TCPTransport: MatterTransport {
             }
             .bind(host: "::", port: port)
             .get()
+        } catch {
+            state.withLockedValue { $0.inbox = nil }
+            inbox.close()
+            throw error
+        }
         state.withLockedValue { $0.listener = bound }
     }
 
     /// Opens a connection to a TCP server; messages sent to the returned peer go over it.
     public func connect(to address: SocketAddress) async throws -> PeerAddress {
         let peer = NIOLockedValueBox<PeerAddress?>(nil)
+        // A connection that cannot be set up fails here, and closes.
         _ = try await ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_keepalive), value: 1)
             .channelInitializer { [self] channel in
-                channel.eventLoop.makeCompletedFuture { peer.withLockedValue { $0 = try? self.attach(channel) } }
+                channel.eventLoop.makeCompletedFuture { try peer.withLockedValue { $0 = try self.attach(channel) } }
             }
             .connect(to: address)
             .get()
@@ -69,7 +77,6 @@ public final class TCPTransport: MatterTransport {
     private func attach(_ channel: Channel) throws -> PeerAddress {
         let id = state.withLockedValue { state in
             defer { state.nextID += 1 }
-            state.connections[state.nextID] = channel
             return state.nextID
         }
         let remote = try channel.remoteAddress.map(UDPTransport.unmapped) ?? SocketAddress(ipAddress: "::", port: 0)
@@ -78,6 +85,8 @@ public final class TCPTransport: MatterTransport {
             ByteToMessageHandler(LengthPrefixDecoder(maxMessageSize: maxMessageSize)),
             Inbound(transport: self, peer: peer),
         ])
+        // Listed once it can be read and its closing is seen.
+        state.withLockedValue { $0.connections[id] = channel }
         return peer
     }
 

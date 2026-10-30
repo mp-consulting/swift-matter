@@ -117,7 +117,11 @@ public final class UDPTransport: MatterTransport {
     /// Joins the groups' multicast addresses on every IPv6 interface, and leaves those no longer listed.
     public func setMulticastGroups(_ addresses: [SocketAddress]) async {
         guard let multicast = channel.withLockedValue({ $0 }) as? MulticastChannel else { return }
-        let devices = ((try? System.enumerateDevices()) ?? []).filter { $0.address?.protocol == .inet6 && $0.multicastSupported }
+        // One device per interface: enumerateDevices lists one per address, and a group is joined once per interface.
+        var seen = Set<Int>()
+        let devices = ((try? System.enumerateDevices()) ?? []).filter {
+            $0.address?.protocol == .inet6 && $0.multicastSupported && seen.insert($0.interfaceIndex).inserted
+        }
         let wanted = Set(addresses.map(\.description))
         let (join, leave) = joined.withLockedValue { joined -> ([SocketAddress], [SocketAddress]) in
             let current = Set(joined.map(\.description))
