@@ -13,7 +13,9 @@ expose other devices as bridged Matter endpoints. Written against the Matter 1.6
 - DNS-SD with a built-in mDNS responder on IPv4 and IPv6.
 - A bridge: an Aggregator with bridged lights (on/off, dimmable, color temperature, extended color), plugs, contact,
   occupancy, temperature, humidity and light sensors, window coverings, closures (gates, garage doors, doors, windows),
-  fans, thermostats, door locks and buttons;
+  fans (rocking, airflow direction), thermostats (heating, cooling, auto), door locks, buttons, air purifiers with a
+  HEPA filter, air quality sensors (with carbon dioxide, PM2.5, PM10 and VOC concentrations), smoke and CO alarms,
+  water valves and robot vacuums;
   compound devices; custom device kinds with your own clusters. Endpoint numbers are stable across restarts.
 
 ## A bridge in a few lines

@@ -75,12 +75,19 @@ public struct DeviceKind: Sendable {
     public static let windowCovering = DeviceKind(deviceTypes: [DeviceTypes.windowCovering]) { handler in
         await base(handler, actuator: false) + [await DeviceClusters.windowCovering(handler)]
     }
-    public static let fan = DeviceKind(deviceTypes: [DeviceTypes.fan]) { handler in
-        await base(handler, actuator: false, groups: true) + [await DeviceClusters.fanControl(handler)]
+    public static let fan = DeviceKind.fan(rocking: false, airflowDirection: false)
+    /// A fan that rocks left and right, or reverses its airflow: its commands and `DeviceState.fanRocking` and
+    /// `.fanAirflowReversed` say so.
+    public static func fan(rocking: Bool, airflowDirection: Bool) -> DeviceKind {
+        DeviceKind(deviceTypes: [DeviceTypes.fan]) { handler in
+            await base(handler, actuator: false, groups: true) + [await DeviceClusters.fanControl(rocking: rocking, airflowDirection: airflowDirection, handler)]
+        }
     }
-    public static func thermostat(heating: Bool = true, cooling: Bool = false) -> DeviceKind {
+    /// `auto` (with heating and cooling) adds SystemMode auto, which keeps the room between its heating and cooling
+    /// setpoints.
+    public static func thermostat(heating: Bool = true, cooling: Bool = false, auto: Bool = false) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.thermostat]) { handler in
-            await base(handler, actuator: false) + [await DeviceClusters.thermostat(heating: heating, cooling: cooling, handler)]
+            await base(handler, actuator: false) + [await DeviceClusters.thermostat(heating: heating, cooling: cooling, auto: auto, handler)]
         }
     }
     /// Locking and unlocking need a timed interaction, as the Door Lock cluster requires (§5.2.10).
@@ -90,6 +97,21 @@ public struct DeviceKind: Sendable {
     /// A button: presses are reported with `BridgedDevice.press`.
     public static let genericSwitch = sensor(DeviceTypes.genericSwitch) { DeviceClusters.genericSwitch() }
     public static let airQualitySensor = sensor(DeviceTypes.airQualitySensor) { DeviceClusters.airQuality() }
+    /// An air quality sensor that measures these concentrations too (`DeviceState.concentration`).
+    public static func airQualitySensor(measuring concentrations: [Concentration]) -> DeviceKind {
+        DeviceKind(deviceTypes: [DeviceTypes.airQualitySensor]) { handler in
+            await base(handler, actuator: false) + [DeviceClusters.airQuality()] + concentrations.map(DeviceClusters.concentration)
+        }
+    }
+    /// An air purifier: its fan as a fan's, and with `filter` its HEPA filter's condition (`DeviceState.filter`), whose
+    /// reset (a new filter) goes to the handler.
+    public static func airPurifier(filter: Bool = false, rocking: Bool = false, airflowDirection: Bool = false) -> DeviceKind {
+        DeviceKind(deviceTypes: [DeviceTypes.airPurifier]) { handler in
+            var clusters = await base(handler, actuator: false) + [await DeviceClusters.fanControl(rocking: rocking, airflowDirection: airflowDirection, handler)]
+            if filter { clusters.append(await DeviceClusters.hepaFilter(handler)) }
+            return clusters
+        }
+    }
     public static func smokeCOAlarm(smoke: Bool = true, carbonMonoxide: Bool = false) -> DeviceKind {
         sensor(DeviceTypes.smokeCoAlarm) { DeviceClusters.smokeCOAlarm(smoke: smoke, carbonMonoxide: carbonMonoxide) }
     }
@@ -173,12 +195,21 @@ public enum DeviceState: Hashable, Sendable {
     /// Hundredths of a percent closed (0 open, 10000 closed).
     case coveringPosition(percent100ths: UInt16)
     case fanSpeed(percent: UInt8)
+    /// A fan rocking left and right, or still.
+    case fanRocking(Bool)
+    /// A fan's airflow, reversed or forward.
+    case fanAirflowReversed(Bool)
+    /// An air purifier's filter: the life it has left in percent (nil when not known), and whether it needs changing.
+    case filter(percentLeft: UInt8?, needsChange: Bool)
+    /// A concentration an air quality sensor measures, in its unit (ppm for carbon dioxide, µg/m³ for the others); nil
+    /// when not known.
+    case concentration(Concentration, Double?)
     case battery(percent: UInt8)
     /// Degrees Celsius.
     case localTemperature(Double?)
     case heatingSetpoint(Double)
     case coolingSetpoint(Double)
-    /// Thermostat SystemMode: off 0, cool 3, heat 4.
+    /// Thermostat SystemMode: off 0, auto 1, cool 3, heat 4.
     case thermostatMode(UInt8)
     /// Nil when the lock is neither locked nor unlocked (jammed, in motion).
     case locked(Bool?)
@@ -282,6 +313,16 @@ public actor BridgedDevice {
             await set(WindowCoveringCluster.id, [WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths: .unsigned(clamped),
                                                  WindowCoveringCluster.Attribute.currentPositionLiftPercentage: .unsigned(clamped / 100)])
         case .fanSpeed(let percent): await set(FanControlCluster.id, DeviceClusters.fanValues(percent: percent))
+        case .fanRocking(let rocking):
+            await set(FanControlCluster.id, [FanControlCluster.Attribute.rockSetting: .unsigned(rocking ? DeviceClusters.rockLeftRight : 0)])
+        case .fanAirflowReversed(let reversed):
+            typealias Direction = FanControlCluster.AirflowDirectionEnum
+            await set(FanControlCluster.id, [FanControlCluster.Attribute.airflowDirection: .unsigned(reversed ? Direction.reverse : Direction.forward)])
+        case .filter(let percentLeft, let needsChange):
+            await set(HepaFilterMonitoringCluster.id, DeviceClusters.filterValues(percentLeft: percentLeft, needsChange: needsChange))
+        case .concentration(let kind, let value):
+            let measured = value.flatMap { $0.isFinite && $0 >= 0 ? TLVValue.float(Float($0)) : nil } ?? .null
+            await set(kind.clusterID, [CarbonDioxideConcentrationMeasurementCluster.Attribute.measuredValue: measured])
         case .localTemperature(let celsius):
             let value = scaled(celsius, by: 100, in: -27315...32767).map { TLVValue.signed(Int64($0)) } ?? .null
             await set(ThermostatCluster.id, [ThermostatCluster.Attribute.localTemperature: value])

@@ -16,9 +16,15 @@ public enum DeviceCommand: Hashable, Sendable {
     case stopCovering
     /// 0...100.
     case setFanSpeed(percent: UInt8)
+    /// A fan's rocking (left and right), on or off.
+    case setFanRocking(Bool)
+    /// A fan's airflow, reversed or forward.
+    case setFanAirflowReversed(Bool)
+    /// An air purifier's filter was replaced (ResetCondition).
+    case resetFilter
     case setHeatingSetpoint(celsius: Double)
     case setCoolingSetpoint(celsius: Double)
-    /// Thermostat SystemMode: off 0, cool 3, heat 4.
+    /// Thermostat SystemMode: off 0, auto 1, cool 3, heat 4.
     case setThermostatMode(UInt8)
     case setLocked(Bool)
     /// Open or close a water valve.
@@ -372,15 +378,36 @@ enum DeviceClusters {
 
     // MARK: - Fan Control (§4.4)
 
-    static func fanControl(_ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
+    /// RockSetting's left-and-right bit (RockBitmap), the one way the bridge's fans rock.
+    static let rockLeftRight: UInt64 = 1
+
+    static func fanControl(rocking: Bool = false, airflowDirection: Bool = false, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
         typealias A = FanControlCluster.Attribute
         // Fan modes off, low, medium, high (FanModeSequence 0: Off/Low/Med/High) and a percentage.
-        let cluster = AttributeCluster(FanControlCluster.definition, attributes: [
+        var features: FanControlCluster.Feature = []
+        var attributes: [AttributeID: TLVValue] = [
             A.fanMode: .unsigned(0), A.fanModeSequence: .unsigned(0), A.percentSetting: .unsigned(0), A.percentCurrent: .unsigned(0),
-        ])
+        ]
+        if rocking {
+            features.insert(.rocking)
+            attributes.merge([A.rockSupport: .unsigned(rockLeftRight), A.rockSetting: .unsigned(0)]) { $1 }
+        }
+        if airflowDirection {
+            features.insert(.airflowDirection)
+            attributes[A.airflowDirection] = .unsigned(FanControlCluster.AirflowDirectionEnum.forward)
+        }
+        let cluster = AttributeCluster(FanControlCluster.definition, featureMap: features.rawValue, attributes: attributes)
         await cluster.onWrite { cluster, attribute, value, _ in
             let percent: UInt8
             switch attribute {
+            case A.rockSetting where rocking:
+                guard let bits = value.uint, bits & ~rockLeftRight == 0 else { throw StatusError(.constraintError) }
+                try await deliver(.setFanRocking(bits != 0), to: handler)
+                return
+            case A.airflowDirection where airflowDirection:
+                guard let direction = value.uint, direction <= FanControlCluster.AirflowDirectionEnum.reverse else { throw StatusError(.constraintError) }
+                try await deliver(.setFanAirflowReversed(direction == FanControlCluster.AirflowDirectionEnum.reverse), to: handler)
+                return
             case A.percentSetting:
                 guard let raw = value.uint, raw <= 100 else { throw StatusError(.constraintError) }
                 percent = UInt8(raw)
@@ -436,11 +463,14 @@ extension DeviceClusters {
         return raw
     }
 
-    static func thermostat(heating: Bool, cooling: Bool, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
+    /// `auto` (heating and cooling only) keeps the room between its two setpoints (SystemMode auto, the AutoMode feature).
+    static func thermostat(heating: Bool, cooling: Bool, auto: Bool = false, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
         typealias A = ThermostatCluster.Attribute
+        let auto = auto && heating && cooling
         var features: ThermostatCluster.Feature = []
         if heating { features.insert(.heating) }
         if cooling { features.insert(.cooling) }
+        if auto { features.insert(.autoMode) }
         let heat = heatingRange, cool = coolingRange
         var attributes: [AttributeID: TLVValue] = [
             A.localTemperature: .null,
@@ -458,6 +488,8 @@ extension DeviceClusters {
                               A.absMaxCoolSetpointLimit: .signed(cool.upperBound), A.minCoolSetpointLimit: .signed(cool.lowerBound),
                               A.maxCoolSetpointLimit: .signed(cool.upperBound)]) { $1 }
         }
+        // The setpoints may meet: a device that keeps a gap between them says so by refusing a write.
+        if auto { attributes[A.minSetpointDeadBand] = .signed(0) }
         let cluster = AttributeCluster(ThermostatCluster.definition, featureMap: features.rawValue, attributes: attributes)
         await cluster.onWrite { _, attribute, value, _ in
             switch attribute {
@@ -467,8 +499,8 @@ extension DeviceClusters {
                 try await deliver(.setCoolingSetpoint(celsius: Double(try setpoint(value, in: cool)) / 100), to: handler)
             case A.systemMode:
                 typealias Mode = ThermostatCluster.SystemModeEnum
-                // Off, cool and heat, as the features allow.
-                guard let mode = value.uint, mode == Mode.off || mode == Mode.cool && cooling || mode == Mode.heat && heating else {
+                // Off, cool, heat and auto, as the features allow.
+                guard let mode = value.uint, mode == Mode.off || mode == Mode.cool && cooling || mode == Mode.heat && heating || mode == Mode.auto && auto else {
                     throw StatusError(.constraintError)
                 }
                 try await deliver(.setThermostatMode(UInt8(mode)), to: handler)

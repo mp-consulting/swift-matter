@@ -364,6 +364,86 @@ struct BridgeTests {
         #expect(status.status != .success)
     }
 
+    @Test func rocksAndReversesFans() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let fan = try await fixture.bridge.add(BridgedDeviceInfo(id: "fan", name: "Ceiling"), kind: .fan(rocking: true, airflowDirection: true)) {
+            await commands.append($0)
+        }
+        typealias A = FanControlCluster.Attribute
+        let features = FanControlCluster.Feature(rawValue: UInt32(try await fixture.read(fan.endpoint, FanControlCluster.id, 0xFFFC).uint ?? 0))
+        #expect(features == [.rocking, .airflowDirection])
+        #expect(try await fixture.read(fan.endpoint, FanControlCluster.id, A.rockSupport) == .unsigned(1))
+        // Left and right only: rocking up and down is refused.
+        let statuses = try await fixture.base.commissioner.client.write([
+            (AttributePath(endpoint: fan.endpoint, cluster: FanControlCluster.id, attribute: A.rockSetting), .unsigned(1)),
+            (AttributePath(endpoint: fan.endpoint, cluster: FanControlCluster.id, attribute: A.rockSetting), .unsigned(2)),
+            (AttributePath(endpoint: fan.endpoint, cluster: FanControlCluster.id, attribute: A.airflowDirection), .unsigned(1)),
+        ], session: fixture.session)
+        #expect(statuses.map(\.1.status) == [.success, .constraintError, .success])
+        #expect(await commands.values == [.setFanRocking(true), .setFanAirflowReversed(true)])
+        await fan.update(.fanRocking(false))
+        await fan.update(.fanAirflowReversed(false))
+        #expect(try await fixture.read(fan.endpoint, FanControlCluster.id, A.rockSetting) == .unsigned(0))
+        #expect(try await fixture.read(fan.endpoint, FanControlCluster.id, A.airflowDirection) == .unsigned(0))
+    }
+
+    @Test func purifiesAndMeasuresTheAir() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let purifier = try await fixture.bridge.add(BridgedDeviceInfo(id: "purifier", name: "Purifier"), kind: .airPurifier(filter: true)) {
+            await commands.append($0)
+        }
+        let sensor = try await fixture.bridge.add(BridgedDeviceInfo(id: "air", name: "Office"), kind: .airQualitySensor(measuring: [.carbonDioxide, .pm25]))
+
+        // The purifier's fan runs as a fan's; its filter wears down to a warning, then needs changing, until it is reset.
+        typealias Filter = HepaFilterMonitoringCluster
+        _ = try await fixture.base.commissioner.client.write([
+            (AttributePath(endpoint: purifier.endpoint, cluster: FanControlCluster.id, attribute: FanControlCluster.Attribute.percentSetting), .unsigned(40)),
+        ], session: fixture.session)
+        await purifier.update(.filter(percentLeft: 8, needsChange: false))
+        #expect(try await fixture.read(purifier.endpoint, Filter.id, Filter.Attribute.condition) == .unsigned(8))
+        #expect(try await fixture.read(purifier.endpoint, Filter.id, Filter.Attribute.changeIndication) == .unsigned(Filter.ChangeIndicationEnum.warning))
+        await purifier.update(.filter(percentLeft: nil, needsChange: true))
+        #expect(try await fixture.read(purifier.endpoint, Filter.id, Filter.Attribute.changeIndication) == .unsigned(Filter.ChangeIndicationEnum.critical))
+        _ = try await fixture.invoke(purifier.endpoint, Filter.id, Filter.Command.resetCondition)
+        #expect(try await fixture.read(purifier.endpoint, Filter.id, Filter.Attribute.condition) == .unsigned(100))
+        #expect(try await fixture.read(purifier.endpoint, Filter.id, Filter.Attribute.changeIndication) == .unsigned(Filter.ChangeIndicationEnum.ok))
+        #expect(await commands.values == [.setFanSpeed(percent: 40), .resetFilter])
+
+        // Carbon dioxide in ppm, particles in µg/m³; an unknown reading is null.
+        typealias CO2 = CarbonDioxideConcentrationMeasurementCluster
+        await sensor.update(.concentration(.carbonDioxide, 812))
+        await sensor.update(.concentration(.pm25, .nan))
+        #expect(try await fixture.read(sensor.endpoint, CO2.id, CO2.Attribute.measuredValue) == .float(812))
+        #expect(try await fixture.read(sensor.endpoint, CO2.id, CO2.Attribute.measurementUnit) == .unsigned(CO2.MeasurementUnitEnum.ppm))
+        #expect(try await fixture.read(sensor.endpoint, Pm25ConcentrationMeasurementCluster.id, CO2.Attribute.measuredValue) == .null)
+        #expect(try await fixture.read(sensor.endpoint, Pm25ConcentrationMeasurementCluster.id, CO2.Attribute.measurementUnit)
+            == .unsigned(CO2.MeasurementUnitEnum.ugm3))
+    }
+
+    @Test func keepsARoomBetweenTwoSetpoints() async throws {
+        let fixture = try await Fixture()
+        let commands = fixture.commands
+        let auto = try await fixture.bridge.add(BridgedDeviceInfo(id: "ac", name: "Living room"), kind: .thermostat(heating: true, cooling: true, auto: true)) {
+            await commands.append($0)
+        }
+        let heater = try await fixture.bridge.add(BridgedDeviceInfo(id: "heater", name: "Bathroom"), kind: .thermostat(auto: true)) {
+            await commands.append($0)
+        }
+        typealias Mode = ThermostatCluster.SystemModeEnum
+        // Auto with heating and cooling; a heater alone has no auto to offer.
+        let statuses = try await fixture.base.commissioner.client.write([
+            (AttributePath(endpoint: auto.endpoint, cluster: ThermostatCluster.id, attribute: ThermostatCluster.Attribute.systemMode), .unsigned(Mode.auto)),
+            (AttributePath(endpoint: heater.endpoint, cluster: ThermostatCluster.id, attribute: ThermostatCluster.Attribute.systemMode), .unsigned(Mode.auto)),
+        ], session: fixture.session)
+        #expect(statuses.map(\.1.status) == [.success, .constraintError])
+        #expect(await commands.values == [.setThermostatMode(UInt8(Mode.auto))])
+        #expect(try await fixture.read(auto.endpoint, ThermostatCluster.id, ThermostatCluster.Attribute.minSetpointDeadBand) == .signed(0))
+        let features = ThermostatCluster.Feature(rawValue: UInt32(try await fixture.read(heater.endpoint, ThermostatCluster.id, 0xFFFC).uint ?? 0))
+        #expect(!features.contains(.autoMode))
+    }
+
     @Test func thermostatsLocksAndButtons() async throws {
         let fixture = try await Fixture()
         let commands = fixture.commands
