@@ -2,6 +2,12 @@ import Testing
 @testable import Matter
 
 struct DiscoveryTests {
+    /// A host with IPv4 only is told controllers will not reach it; one IPv6 address, link-local included, is enough.
+    @Test func warnsWhenNoIPv6AddressIsAdvertised() {
+        #expect(MDNSAdvertiser.ipv6Warning([.a([192, 168, 2, 85])])?.contains("no IPv6 address") == true)
+        #expect(MDNSAdvertiser.ipv6Warning([.a([192, 168, 2, 85]), .aaaa([0xFE, 0x80] + Array(repeating: 0, count: 13) + [1])]) == nil)
+    }
+
     var records: MatterRecords {
         var records = MatterRecords(host: DNSName(["AABBCCDDEEFF", "local"]), addresses: [.aaaa(Array(repeating: 1, count: 16))],
                                     commissionableInstance: "DD200C20D25AE5F7")

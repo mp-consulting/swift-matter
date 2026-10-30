@@ -196,6 +196,15 @@ public actor MDNSAdvertiser: NodeAdvertiser {
             }
         }
         if channels.isEmpty { logger.warning("mDNS: no multicast interface to advertise on") }
+        else if let warning = Self.ipv6Warning(records.addresses) { logger.warning("\(warning)") }
+    }
+
+    /// Controllers reach a node over IPv6 (Core §2.5.5): a host with IPv4 addresses only is told why pairing would fail,
+    /// and the usual causes. Nil when an IPv6 address is advertised.
+    static func ipv6Warning(_ addresses: [DNSRecord.Data]) -> String? {
+        guard !addresses.contains(where: { if case .aaaa = $0 { true } else { false } }) else { return nil }
+        return "mDNS: no IPv6 address on any interface; Apple Home, Google Home and the other controllers reach Matter "
+            + "devices over IPv6 and will not find this one (in Docker, use host networking with IPv6; on a Synology, turn IPv6 on)"
     }
 
     static func isRoutable(_ ip: String) -> Bool { !(ip.hasPrefix("127.") || ip == "::1") }
