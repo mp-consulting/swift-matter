@@ -38,10 +38,10 @@ struct GroupTests {
     let epochKey = MatterCrypto.random(16)
 
     /// Installs group 7 on endpoint 2 the way an administrator does (Core §4.17.4.1), with Operate for the group.
-    func installGroup(_ fixture: BridgeTests.Fixture) async throws {
+    func installGroup(_ fixture: BridgeTests.Fixture, cacheAndSync: Bool = false) async throws {
         typealias S = GroupKeyManagementCluster.GroupKeySetStruct
         _ = try await fixture.invoke(0, GroupKeyManagementCluster.id, GroupKeyManagementCluster.Command.keySetWrite, [.field(0, .structure([
-            .field(S.groupKeySetId, .unsigned(Self.keySetID)), .field(S.groupKeySecurityPolicy, .unsigned(0)),
+            .field(S.groupKeySetId, .unsigned(Self.keySetID)), .field(S.groupKeySecurityPolicy, .unsigned(cacheAndSync ? 1 : 0)),
             .field(S.epochKey0, .bytes(epochKey)), .field(S.epochStartTime0, .unsigned(1)), .field(S.epochKey1, .null),
             .field(S.epochStartTime1, .null), .field(S.epochKey2, .null), .field(S.epochStartTime2, .null),
         ]))])
@@ -119,6 +119,76 @@ struct GroupTests {
         try await transport.send(try await groupInvoke(fixture, OnOffCluster.Command.off, counter: 102), to: .memory("node"))
         _ = try await fixture.read(2, OnOffCluster.id, OnOffCluster.Attribute.onOff)
         #expect(await commands.values.count == 3)
+    }
+
+    func operationalKey(_ fixture: BridgeTests.Fixture) async throws -> [UInt8] {
+        Fabric.operationalGroupKey(epochKey: epochKey, compressedFabricID: try #require(await fixture.base.node.fabrics.fabric(1)).compressedFabricID)
+    }
+
+    /// A message under the group key, its privacy removed and opened.
+    func open(_ frame: [UInt8], key: [UInt8]) throws -> Message {
+        let clear = try MessageHeader.togglePrivacy(frame, privacyKey: AESCCM(key: MatterCrypto.privacyKey(encryptionKey: key)))
+        let (header, length) = try MessageHeader.decode(clear)
+        return try Message.open(frame: clear, header: header, headerLength: length, key: AESCCM(key: key), nonceSourceNodeID: try #require(header.source))
+    }
+
+    @Test func synchronizesCountersBeforeRunningACacheAndSyncCommand() async throws {
+        let fixture = try await BridgeTests.Fixture()
+        let commands = fixture.commands
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "lamp", name: "Lamp"), kind: .onOffLight) { await commands.append($0) }
+        try await installGroup(fixture, cacheAndSync: true)
+        let key = try await operationalKey(fixture)
+        // The test is the group's sender, on the memory network.
+        let received = Recorder<[UInt8]>()
+        let peer = await fixture.base.network.transport(named: "peer")
+        try await peer.start { bytes, _ in await received.append(bytes) }
+
+        // The first command waits: the node asks the sender for its counter, under the group key, to it alone.
+        let on = try await groupInvoke(fixture, OnOffCluster.Command.on, counter: 500)
+        try await peer.send(on, to: .memory("node"))
+        try await eventually { await !received.values.isEmpty }
+        #expect(await commands.values.isEmpty)
+        let request = try open(try #require(await received.values.first), key: key)
+        #expect(request.header.isControl && request.header.destination == .node(0x1122) && request.header.source == 0x42)
+        #expect(request.payloadHeader.opcode == SecureChannelOpcode.messageCounterSyncRequest.rawValue && request.payload.count == 8)
+
+        // The answer carries the sender's counter and the challenge: the waiting command runs, once.
+        var payload: [UInt8] = []
+        payload.appendLittleEndian(UInt32(500))
+        let response = try Message.groupFrame(
+            payloadHeader: PayloadHeader(isInitiator: false, needsAck: true, ackedCounter: request.header.counter,
+                                         opcode: SecureChannelOpcode.messageCounterSyncResponse.rawValue,
+                                         exchangeID: request.payloadHeader.exchangeID, protocolID: .secureChannel),
+            payload: payload + request.payload, destination: .node(0x42), source: 0x1122, counter: 9000, control: true, operationalKey: key)
+        try await peer.send(response, to: .memory("node"))
+        try await eventually { await commands.values == [.setOn(true)] }
+        try await peer.send(on, to: .memory("node"))
+        try await peer.send(try await groupInvoke(fixture, OnOffCluster.Command.off, counter: 501), to: .memory("node"))
+        try await eventually { await commands.values == [.setOn(true), .setOn(false)] }
+    }
+
+    @Test func dropsAWaitingCommandWithoutAnAnswer() async throws {
+        let fixture = try await BridgeTests.Fixture()
+        let commands = fixture.commands
+        _ = try await fixture.bridge.add(BridgedDeviceInfo(id: "lamp", name: "Lamp"), kind: .onOffLight) { await commands.append($0) }
+        try await installGroup(fixture, cacheAndSync: true)
+        let received = Recorder<[UInt8]>()
+        let peer = await fixture.base.network.transport(named: "peer")
+        try await peer.start { bytes, _ in await received.append(bytes) }
+        try await peer.send(try await groupInvoke(fixture, OnOffCluster.Command.on, counter: 7), to: .memory("node"))
+        try await eventually { await !received.values.isEmpty }
+        // Past MSG_COUNTER_SYNC_TIMEOUT (scaled), the waiting command is dropped; a late answer finds nothing waiting.
+        try await eventually { await fixture.base.node.layer.pendingSyncCount == 0 }
+        let request = try open(try #require(await received.values.first), key: try await operationalKey(fixture))
+        var payload: [UInt8] = []
+        payload.appendLittleEndian(UInt32(7))
+        try await peer.send(try Message.groupFrame(
+            payloadHeader: PayloadHeader(isInitiator: false, needsAck: true, opcode: SecureChannelOpcode.messageCounterSyncResponse.rawValue,
+                                         exchangeID: request.payloadHeader.exchangeID, protocolID: .secureChannel),
+            payload: payload + request.payload, destination: .node(0x42), source: 0x1122, counter: 1, control: true,
+            operationalKey: try await operationalKey(fixture)), to: .memory("node"))
+        _ = try await fixture.read(2, OnOffCluster.id, OnOffCluster.Attribute.onOff)
+        #expect(await commands.values.isEmpty)
     }
 
     @Test func refusesAGroupWithoutKeysOrAccess() async throws {

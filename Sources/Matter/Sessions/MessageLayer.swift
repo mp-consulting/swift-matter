@@ -482,30 +482,137 @@ public actor MessageLayer {
     /// A group message (Core §4.16.3): each operational key its session id points to is tried, privacy removed
     /// first, until one authenticates it for a group mapped to that key; its counter is checked trust-first.
     private func receiveGroup(_ bytes: [UInt8], header: MessageHeader, headerLength: Int, from peer: PeerAddress) async {
-        // Group messages are private: only the P flag among the security flags (Core §4.16.2).
-        guard let groups, header.privacy, !header.isControl else { return }
+        // Group messages are private: the P flag set (Core §4.16.2, §4.18.5).
+        guard let groups, header.privacy else { return }
         for candidate in await groups.candidates(sessionID: header.sessionID) {
-            // The header's counter, source and group are readable only once the privacy is removed.
-            guard let clear = try? header.privacy ? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy) : bytes,
-                  let decoded = try? header.privacy ? MessageHeader.decode(clear).0 : header,
-                  case .group(let group) = decoded.destination, let source = decoded.source,
+            // The header's counter, source and destination are readable only once the privacy is removed.
+            guard let clear = try? MessageHeader.togglePrivacy(bytes, privacyKey: candidate.privacy),
+                  let decoded = try? MessageHeader.decode(clear).0, let source = decoded.source,
                   let message = try? Message.open(frame: clear, header: decoded, headerLength: headerLength, key: candidate.key,
-                                                  nonceSourceNodeID: source),
-                  candidate.groups.contains(group)
+                                                  nonceSourceNodeID: source)
             else { continue }
-            guard await groups.accept(decoded.counter, fabric: candidate.fabric, source: source, control: decoded.isControl) else { return }
-            // Control messages are MCSP's, which a trust-first node does not run (Core §4.18).
-            guard !decoded.isControl, message.payloadHeader.isInitiator, let handler = handlers[message.payloadHeader.protocolID] else { return }
-            let session = SessionInfo.group(group, fabric: candidate.fabric, source: source, sessionID: header.sessionID, peer: peer)
-            let previous = groupTail
-            let task = Task {
-                await previous?.value
-                await handler.handleGroup(message, session: session)
+            switch decoded.destination {
+            case .node(let node) where decoded.isControl:
+                // MCSP between two nodes under the group key (Core §4.18.5): addressed to this node only.
+                guard await groups.nodeID(fabric: candidate.fabric) == node,
+                      await groups.check(decoded.counter, fabric: candidate.fabric, source: source, control: true, cacheAndSync: false) == .new
+                else { return }
+                await counterSync(message, from: source, candidate: candidate, sessionID: header.sessionID, peer: peer)
+            case .group(let group) where candidate.groups.contains(group) && !decoded.isControl:
+                let session = SessionInfo.group(group, fabric: candidate.fabric, source: source, sessionID: header.sessionID, peer: peer)
+                switch await groups.check(decoded.counter, fabric: candidate.fabric, source: source, control: false,
+                                          cacheAndSync: candidate.cacheAndSync) {
+                case .new: dispatchGroup(message, session: session)
+                case .duplicate: break
+                case .unsynchronized: await awaitSync(message, session: session, candidate: candidate)
+                }
+            default:
+                continue
             }
-            groupTail = task
-            track { await task.value }
             return
         }
+    }
+
+    /// Hands an authenticated group message to its protocol, after the ones before it (nothing answers them to keep a
+    /// sender in step).
+    private func dispatchGroup(_ message: Message, session: SessionInfo) {
+        guard message.payloadHeader.isInitiator, let handler = handlers[message.payloadHeader.protocolID] else { return }
+        let previous = groupTail
+        let task = Task {
+            await previous?.value
+            await handler.handleGroup(message, session: session)
+        }
+        groupTail = task
+        track { await task.value }
+    }
+
+    // MARK: - Message counter synchronization (Core §4.18)
+
+    struct SyncKey: Hashable {
+        let fabric: FabricIndex
+        let peer: NodeID
+        let sessionID: UInt16
+    }
+
+    /// A MsgCounterSyncReq in flight and the messages waiting on it.
+    struct PendingSync {
+        let challenge: [UInt8]
+        let exchangeID: UInt16
+        var queued: [(Message, SessionInfo)]
+        var timeout: Task<Void, Never>?
+    }
+
+    private var pendingSyncs: [SyncKey: PendingSync] = [:]
+    /// How many synchronizations are in flight: tests wait on it.
+    var pendingSyncCount: Int { pendingSyncs.count }
+    static let syncJitter: Duration = .milliseconds(500)
+    static let syncTimeout: Duration = .milliseconds(400)
+
+    /// A data message from a peer whose counter a cache-and-sync key must learn first: kept, and the peer asked, after
+    /// a random wait, with a MsgCounterSyncReq; the messages are dropped if no answer comes in time (Core §4.18.5).
+    private func awaitSync(_ message: Message, session: SessionInfo, candidate: Groups.Candidate) async {
+        guard let fabric = session.fabricIndex else { return }
+        let key = SyncKey(fabric: fabric, peer: session.peerNodeID, sessionID: session.localSessionID)
+        if pendingSyncs[key] != nil {
+            pendingSyncs[key]?.queued.append((message, session))
+            return
+        }
+        let challenge = MatterCrypto.random(8), exchangeID = allocateExchangeID()
+        pendingSyncs[key] = PendingSync(challenge: challenge, exchangeID: exchangeID, queued: [(message, session)])
+        let jitter = reliability.scaled(Self.syncJitter * Double.random(in: 0...1)), timeout = reliability.scaled(Self.syncTimeout)
+        pendingSyncs[key]?.timeout = Task { [weak self] in
+            guard (try? await Task.sleep(for: jitter)) != nil else { return }
+            await self?.sendSync(.messageCounterSyncRequest, challenge, to: session.peerNodeID, exchangeID: exchangeID, initiator: true,
+                                 candidate: candidate, peer: session.peerAddress)
+            guard (try? await Task.sleep(for: timeout)) != nil else { return }
+            await self?.dropSync(key, exchangeID: exchangeID)
+        }
+    }
+
+    private func dropSync(_ key: SyncKey, exchangeID: UInt16) {
+        guard pendingSyncs[key]?.exchangeID == exchangeID else { return }
+        pendingSyncs[key] = nil
+    }
+
+    /// A MsgCounterSyncReq is answered with this node's data counter; a MsgCounterSyncRsp matching the request in
+    /// flight teaches the peer's, and the messages that waited on it are processed in order.
+    private func counterSync(_ message: Message, from source: NodeID, candidate: Groups.Candidate, sessionID: UInt16, peer: PeerAddress) async {
+        guard let groups, message.payloadHeader.protocolID == .secureChannel else { return }
+        switch SecureChannelOpcode(rawValue: message.payloadHeader.opcode) {
+        case .messageCounterSyncRequest:
+            guard message.payloadHeader.isInitiator, message.payload.count == 8 else { return }
+            var payload: [UInt8] = []
+            payload.appendLittleEndian(await groups.dataCounter)
+            await sendSync(.messageCounterSyncResponse, payload + message.payload, to: source, exchangeID: message.payloadHeader.exchangeID,
+                           initiator: false, acknowledging: message.header.counter, candidate: candidate, peer: peer)
+        case .messageCounterSyncResponse:
+            let key = SyncKey(fabric: candidate.fabric, peer: source, sessionID: sessionID)
+            guard message.payload.count == 12, let pending = pendingSyncs[key], pending.exchangeID == message.payloadHeader.exchangeID,
+                  MatterCrypto.equal(Array(message.payload[4...]), pending.challenge) else { return }
+            pending.timeout?.cancel()
+            pendingSyncs[key] = nil
+            var reader = ByteReader(message.payload, truncated: MessageError.truncated)
+            guard let counter = try? reader.read(UInt32.self) else { return }
+            await groups.synchronize(fabric: candidate.fabric, source: source, counter: counter)
+            for (queued, session) in pending.queued
+            where await groups.check(queued.header.counter, fabric: candidate.fabric, source: source, control: false, cacheAndSync: true) == .new {
+                dispatchGroup(queued, session: session)
+            }
+        default:
+            break
+        }
+    }
+
+    /// An MCSP message to one node, under the group key being synchronized, with the C and P flags (Core §4.18.5).
+    private func sendSync(_ opcode: SecureChannelOpcode, _ payload: [UInt8], to destination: NodeID, exchangeID: UInt16, initiator: Bool,
+                          acknowledging acked: UInt32? = nil, candidate: Groups.Candidate, peer: PeerAddress) async {
+        guard let groups, let source = await groups.nodeID(fabric: candidate.fabric) else { return }
+        let payloadHeader = PayloadHeader(isInitiator: initiator, needsAck: true, ackedCounter: acked, opcode: opcode.rawValue,
+                                          exchangeID: exchangeID, protocolID: .secureChannel)
+        guard let frame = try? Message.groupFrame(payloadHeader: payloadHeader, payload: payload, destination: .node(destination),
+                                                  source: source, counter: await groups.nextControlCounter(), control: true,
+                                                  operationalKey: candidate.operationalKey) else { return }
+        try? await transport.send(frame, to: peer)
     }
 
     private func handlerFinished(_ id: UInt64) { handlerTasks[id] = nil }

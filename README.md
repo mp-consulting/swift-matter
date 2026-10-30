@@ -37,8 +37,8 @@ development commands.
 ## Limits
 
 - Matter over IP only: no Bluetooth (BTP), Thread or Wi-Fi PAF commissioning; the node must already be on the network.
-- Groups use the trust-first policy only (no cache-and-sync, no MCSP) and no Groupcast cluster. No OTA, no ICD (sleepy
-  device) support. TCP (`NodeConfiguration.tcp`) is off by default.
+- Groups take trust-first and cache-and-sync keys (MCSP); no Groupcast cluster. MCSP messages are not retransmitted. No
+  OTA (it needs a vendor ID of its own), no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`) is off by default.
 - Scenes are reported with an empty table; level and color transitions complete at once.
 
 ## Certification

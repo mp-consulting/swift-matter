@@ -22,9 +22,10 @@ public actor Groups {
         let privacy: AESCCM
     }
 
-    /// A key set's operational keys; its policy is always trust-first (the only one this node supports).
+    /// A key set's operational keys and its counter policy: trust-first, or cache-and-sync (MCSP, Core §4.18).
     struct KeySet {
         let keys: [OperationalKey]
+        var cacheAndSync = false
     }
 
     struct Membership: Equatable {
@@ -47,6 +48,17 @@ public actor Groups {
         let privacy: AESCCM
         /// The groups mapped to the key's set: a decrypted message's group must be one of them.
         let groups: Set<GroupID>
+        /// The operational key itself, to answer or ask for counter synchronization with it.
+        let operationalKey: [UInt8]
+        let cacheAndSync: Bool
+    }
+
+    /// What a group message's counter says (Core §4.18.4).
+    enum CounterCheck {
+        case new
+        case duplicate
+        /// From a peer whose data counter is not known yet, under a cache-and-sync key: synchronize first.
+        case unsynchronized
     }
 
     private struct PeerKey: Hashable {
@@ -60,11 +72,19 @@ public actor Groups {
     private let storage: any MatterStorage
     private let fabricTable: FabricTable
     private var observers: [@Sendable ([SocketAddress]) async -> Void] = []
+    /// The Global Group Encrypted Data and Control Message Counters (Core §4.6.1): kept across restarts.
+    private var counters: (data: UInt32, control: UInt32)
 
     public init(storage: any MatterStorage, fabrics: FabricTable) async {
         self.storage = storage
         fabricTable = fabrics
         if let data = await storage.value(for: StorageKey.groups), let decoded = try? Self.decode(data) { self.fabrics = decoded }
+        if let data = await storage.value(for: StorageKey.groupCounters), let fields = try? TLVStruct(decoding: data),
+           let dataCounter = try? fields.uint(1, as: UInt32.self), let control = try? fields.uint(2, as: UInt32.self) {
+            counters = (dataCounter, control)
+        } else {
+            counters = (MessageCounter.initialValue(), MessageCounter.initialValue())
+        }
     }
 
     /// Called with the multicast addresses to listen on whenever memberships change.
@@ -80,8 +100,8 @@ public actor Groups {
         let fields = try TLVStruct(value)
         let id = try fields.uint(S.groupKeySetId, as: UInt16.self)
         let policy = try fields.uint(S.groupKeySecurityPolicy, as: UInt8.self)
-        // Only trust-first: CacheAndSync is not in the FeatureMap (Core §11.2.5.4).
-        guard id != 0, policy == 0 else { throw StatusError(.invalidCommand) }
+        typealias Policy = GroupKeyManagementCluster.GroupKeySecurityPolicyEnum
+        guard id != 0, UInt64(policy) == Policy.trustFirst || UInt64(policy) == Policy.cacheAndSync else { throw StatusError(.invalidCommand) }
         // The three slots, key and start time each, null or absent alike; empty slots may only trail.
         func present(_ tag: UInt8) -> TLVValue? { fields[tag].flatMap { $0 == .null ? nil : $0 } }
         var slots = [(S.epochKey0, S.epochStartTime0), (S.epochKey1, S.epochStartTime1), (S.epochKey2, S.epochStartTime2)]
@@ -102,7 +122,7 @@ public actor Groups {
         guard state.keySets[id] != nil || state.keySets.count < Self.maxKeySetsPerFabric else { throw StatusError(.resourceExhausted) }
         state.keySets[id] = KeySet(keys: try epochs.map { epoch in
             try Self.operationalKey(Fabric.operationalGroupKey(epochKey: epoch.key, compressedFabricID: compressed), startTime: epoch.start)
-        })
+        }, cacheAndSync: UInt64(policy) == GroupKeyManagementCluster.GroupKeySecurityPolicyEnum.cacheAndSync)
         fabrics[fabric] = state
         try await save()
     }
@@ -113,7 +133,7 @@ public actor Groups {
         guard let set = fabrics[fabric]?.keySets[id] else { return nil }
         let starts = [S.epochStartTime0, S.epochStartTime1, S.epochStartTime2]
         var fields: [TLVElement] = [.field(S.groupKeySetId, .unsigned(UInt64(id))),
-                                    .field(S.groupKeySecurityPolicy, .unsigned(GroupKeyManagementCluster.GroupKeySecurityPolicyEnum.trustFirst))]
+                                    .field(S.groupKeySecurityPolicy, .unsigned(set.cacheAndSync ? 1 : 0))]
         for (slot, (keyTag, startTag)) in zip([S.epochKey0, S.epochKey1, S.epochKey2], starts).enumerated() {
             fields.append(.field(keyTag, .null))
             fields.append(.field(startTag, set.keys.indices.contains(slot) ? .unsigned(set.keys[slot].startTime) : .null))
@@ -278,18 +298,50 @@ public actor Groups {
                 guard !keys.isEmpty else { return [] }
                 let groups = Set(state.keyMap.filter { $0.keySet == id }.map(\.group))
                 guard !groups.isEmpty else { return [] }
-                return keys.map { Candidate(fabric: fabric, key: $0.encryption, privacy: $0.privacy, groups: groups) }
+                return keys.map {
+                    Candidate(fabric: fabric, key: $0.encryption, privacy: $0.privacy, groups: groups, operationalKey: $0.key,
+                              cacheAndSync: set.cacheAndSync)
+                }
             }
         }
     }
 
-    /// Trust-first counters per peer and counter type (Core §4.18.1.1): the first authenticated counter is trusted.
-    func accept(_ counter: UInt32, fabric: FabricIndex, source: NodeID, control: Bool) -> Bool {
+    /// A peer's counter, per counter type (Core §4.18.4): control messages and trust-first keys trust the first
+    /// authenticated counter; a cache-and-sync key waits for MCSP to learn it.
+    func check(_ counter: UInt32, fabric: FabricIndex, source: NodeID, control: Bool, cacheAndSync: Bool) -> CounterCheck {
         let key = PeerKey(fabric: fabric, source: source, control: control)
-        var state = peers[key] ?? MessageReceptionState(policy: .rolling)
+        guard var state = peers[key] else {
+            if cacheAndSync, !control { return .unsynchronized }
+            // Trust-first: this first counter is received, so a replay of it is not new.
+            var state = MessageReceptionState(policy: .rolling)
+            _ = state.accept(counter)
+            peers[key] = state
+            return .new
+        }
         defer { peers[key] = state }
-        return state.accept(counter)
+        return state.accept(counter) ? .new : .duplicate
     }
+
+    /// The peer's data counter, learnt from a MsgCounterSyncRsp.
+    func synchronize(fabric: FabricIndex, source: NodeID, counter: UInt32) {
+        peers[PeerKey(fabric: fabric, source: source, control: false)] = MessageReceptionState(policy: .rolling, learnt: counter)
+    }
+
+    /// The node's id on a fabric: the source of its MCSP messages.
+    func nodeID(fabric: FabricIndex) async -> NodeID? { await fabricTable.fabric(fabric)?.nodeID }
+
+    /// The next Global Group Encrypted Control Message Counter, saved before it is used.
+    func nextControlCounter() async -> UInt32 {
+        let counter = counters.control
+        counters.control &+= 1
+        try? await storage.setValue(TLVEncoder.encode(.structure([.field(1, .unsigned(UInt64(counters.data))),
+                                                                  .field(2, .unsigned(UInt64(counters.control)))])),
+                                    for: StorageKey.groupCounters)
+        return counter
+    }
+
+    /// The Global Group Encrypted Data Message Counter, for a MsgCounterSyncRsp: this node sends no group data.
+    var dataCounter: UInt32 { counters.data }
 
     // MARK: - Derivations
 
@@ -329,7 +381,7 @@ public actor Groups {
                 .field(1, .unsigned(UInt64(fabric))),
                 .field(2, .array(state.keySets.sorted { $0.key < $1.key }.map { id, set in
                     TLVElement(.structure([
-                        .field(1, .unsigned(UInt64(id))),
+                        .field(1, .unsigned(UInt64(id))), .field(2, .bool(set.cacheAndSync)),
                         .field(3, .array(set.keys.map { TLVElement(.structure([.field(1, .bytes($0.key)), .field(2, .unsigned($0.startTime))])) })),
                     ]))
                 })),
@@ -355,7 +407,7 @@ public actor Groups {
                     let keyFields = try TLVStruct(entry.value)
                     return try operationalKey(try keyFields.bytes(1), startTime: try keyFields.uint(2))
                 }
-                state.keySets[try setFields.uint(1, as: UInt16.self)] = KeySet(keys: keys)
+                state.keySets[try setFields.uint(1, as: UInt16.self)] = KeySet(keys: keys, cacheAndSync: setFields[2]?.bool ?? false)
             }
             state.keyMap = try fields.elements(3).map { entry in
                 let entryFields = try TLVStruct(entry.value)

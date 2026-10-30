@@ -274,7 +274,9 @@ enum RootClusters {
     static func groupKeyManagement(_ groups: Groups) async -> AttributeCluster {
         typealias A = GroupKeyManagementCluster.Attribute
         typealias C = GroupKeyManagementCluster.Command
-        let cluster = AttributeCluster(GroupKeyManagementCluster.definition, attributes: [
+        // Cache-and-sync keys are supported, with MCSP (Core §11.2.4.1).
+        let cluster = AttributeCluster(GroupKeyManagementCluster.definition,
+                                       featureMap: GroupKeyManagementCluster.Feature.cacheAndSync.rawValue, attributes: [
             A.maxGroupsPerFabric: .unsigned(UInt64(Groups.maxGroupsPerFabric)),
             // The IPK's set and the others (Core §11.2.6.4).
             A.maxGroupKeysPerFabric: .unsigned(UInt64(1 + Groups.maxKeySetsPerFabric)),

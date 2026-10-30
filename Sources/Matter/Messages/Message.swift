@@ -211,8 +211,15 @@ public struct Message: Sendable {
     /// node id as the nonce's, and private (only the P flag among the security flags).
     public static func groupFrame(payloadHeader: PayloadHeader, payload: [UInt8], group: GroupID, source: NodeID, counter: UInt32,
                                   operationalKey: [UInt8]) throws -> [UInt8] {
-        let header = MessageHeader(sessionID: Groups.groupSessionID(operationalKey: operationalKey), sessionType: .group, privacy: true,
-                                   counter: counter, source: source, destination: .group(group))
+        try groupFrame(payloadHeader: payloadHeader, payload: payload, destination: .group(group), source: source, counter: counter,
+                       operationalKey: operationalKey)
+    }
+
+    /// A message under a group key: to a group, or to one node with the C flag for MCSP (Core §4.18.5).
+    static func groupFrame(payloadHeader: PayloadHeader, payload: [UInt8], destination: MessageHeader.Destination, source: NodeID,
+                           counter: UInt32, control: Bool = false, operationalKey: [UInt8]) throws -> [UInt8] {
+        let header = MessageHeader(sessionID: Groups.groupSessionID(operationalKey: operationalKey), sessionType: .group, isControl: control,
+                                   privacy: true, counter: counter, source: source, destination: destination)
         let message = Message(header: header, payloadHeader: payloadHeader, payload: payload)
         let sealed = try message.sealedFrame(key: AESCCM(key: operationalKey), nonceSourceNodeID: source)
         return try MessageHeader.togglePrivacy(sealed, privacyKey: AESCCM(key: MatterCrypto.privacyKey(encryptionKey: operationalKey)))

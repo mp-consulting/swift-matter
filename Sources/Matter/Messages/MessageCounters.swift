@@ -22,6 +22,8 @@ public struct MessageReceptionState: Sendable {
     private(set) var maxCounter: UInt32?
     /// Bit i set: max - (i + 1) was seen.
     private var window: UInt32 = 0
+    /// Whether the maximum itself was seen: not when it was learnt rather than received.
+    private var maxSeen = true
     let policy: Policy
 
     public init(policy: Policy) { self.policy = policy }
@@ -34,11 +36,25 @@ public struct MessageReceptionState: Sendable {
         window = .max
     }
 
+    /// A peer's counter learnt from it (MCSP, Core §4.18.5): its maximum, with the bitmap cleared. The spec calls it
+    /// the peer's "current" counter, which may be the last one it used or the next: the maximum counts as not seen
+    /// yet, so the message that triggered the synchronization is new either way, once.
+    public init(policy: Policy, learnt maxCounter: UInt32) {
+        self.policy = policy
+        self.maxCounter = maxCounter
+        window = 0
+        maxSeen = false
+    }
+
     /// Whether `counter` is new; records it if so.
     public mutating func accept(_ counter: UInt32) -> Bool {
         guard let max = maxCounter else {
             maxCounter = counter
             window = 0
+            return true
+        }
+        if counter == max, !maxSeen {
+            maxSeen = true
             return true
         }
         switch policy {
@@ -68,9 +84,11 @@ public struct MessageReceptionState: Sendable {
     }
 
     private mutating func shift(by distance: UInt32) {
-        // The old maximum becomes "distance" behind the new one.
-        window = distance >= MessageCounter.windowSize ? (distance == MessageCounter.windowSize ? 1 << 31 : 0)
-            : (window << distance) | (1 << (distance - 1))
+        // The old maximum becomes "distance" behind the new one, marked seen if it was; the new one is seen.
+        let old: UInt32 = maxSeen ? 1 : 0
+        window = distance >= MessageCounter.windowSize ? (distance == MessageCounter.windowSize ? old << 31 : 0)
+            : (window << distance) | (old << (distance - 1))
+        maxSeen = true
     }
 
     /// `offset` = max - counter, at least 1 for a counter inside the window.
