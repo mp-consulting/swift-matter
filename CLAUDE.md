@@ -43,6 +43,7 @@ bin/dev build                 # debug build (scratch path outside ~/Documents on
 bin/dev test                  # all tests; bin/dev test SPAKE2PlusTests for one suite
 bin/dev lint                  # whitespace, tabs, stray prints
 bin/dev demo --reset          # the demo bridge on port 5540, storage in ~/.swift-matter-demo
+bin/dev bench                 # matter-bench in release; update Benchmarks.md with its tables
 bin/dev interop               # commission the running demo with chip-tool and toggle a light
 bin/dev generate ~/src/matter.js   # regenerate Definitions.swift after a matter.js update
 ```

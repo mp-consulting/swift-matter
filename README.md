@@ -31,7 +31,7 @@ print(node.setupPayload.qrCode, node.setupPayload.manualCode)
 await lamp.update(.on(true))   // the lamp changed on its own
 ```
 
-`bin/dev demo` runs a bridge of virtual devices; see [CLAUDE.md](CLAUDE.md) for the layout and `bin/dev help` for the
+`bin/dev demo` runs a bridge of virtual devices, `bin/dev bench` measures one ([Benchmarks.md](Benchmarks.md)); see [CLAUDE.md](CLAUDE.md) for the layout and `bin/dev help` for the
 development commands.
 
 ## Limits
