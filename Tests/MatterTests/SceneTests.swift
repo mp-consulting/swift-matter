@@ -101,6 +101,9 @@ struct SceneTests {
             let refused = try #require(fields(try await scene(fixture, C.addScene, 6, [.field(2, .unsigned(0)), .field(3, .utf8("")), .field(4, .array([bad]))])))
             #expect(refused[0]?.uint == UInt64(IMStatus.invalidCommand.rawValue))
         }
+        // A name over 16 bytes is out of range, not cut.
+        let long = try #require(fields(try await scene(fixture, C.addScene, 6, [.field(2, .unsigned(0)), .field(3, .utf8("Seventeen bytes!!")), .field(4, .array([]))])))
+        #expect(long[0]?.uint == UInt64(IMStatus.constraintError.rawValue))
         // Scene 255 is out of range and echoed; a group the endpoint is not in is invalid.
         let outOfRange = try #require(fields(try await scene(fixture, C.viewScene, 255)))
         #expect(outOfRange[0]?.uint == UInt64(IMStatus.constraintError.rawValue) && outOfRange[2]?.uint == 255)

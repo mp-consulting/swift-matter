@@ -202,11 +202,6 @@ actor SceneEndpoint {
         for case let cluster as AttributeCluster in clusters {
             guard var attributes = Self.attributes[cluster.id] else { continue }
             for id in attributes.keys where await cluster.value(id) == nil { attributes[id] = nil }
-            // A color temperature is within the light's physical range.
-            if let low = await cluster.value(ColorControlCluster.Attribute.colorTempPhysicalMinMireds)?.uint,
-               let high = await cluster.value(ColorControlCluster.Attribute.colorTempPhysicalMaxMireds)?.uint, low <= high {
-                attributes[ColorControlCluster.Attribute.colorTemperatureMireds]?.range = low...high
-            }
             members[cluster.id] = Member(cluster: cluster, attributes: attributes)
         }
     }
@@ -433,12 +428,15 @@ extension DeviceClusters {
                 let group = try group(request, 0), scene = try number(request, 1)
                 let transitionTime = try number(request, 2)
                 guard let name = request[3]?.string, let sets = request[4]?.elements else { throw StatusError(.invalidCommand) }
-                guard scene <= 254, transitionTime <= 60_000_000 else { return response(C.addSceneResponse, .constraintError, group, scene) }
+                // Constraints first, as connectedhomeip checks them: a name is at most 16 bytes, not cut.
+                guard scene <= 254, transitionTime <= 60_000_000, name.utf8.count <= 16 else {
+                    return response(C.addSceneResponse, .constraintError, group, scene)
+                }
                 let (scenes, fabric, endpoint) = try await scope(context)
                 guard await valid(group, endpoint, fabric, context), let values = await state.decode(sets) else {
                     return response(C.addSceneResponse, .invalidCommand, group, scene)
                 }
-                let status = await scenes.set(Scenes.Scene(name: name.utf8Prefix(16), transitionTime: UInt32(transitionTime), values: values),
+                let status = await scenes.set(Scenes.Scene(name: name, transitionTime: UInt32(transitionTime), values: values),
                                               for: .init(fabric: fabric, endpoint: endpoint, group: group, scene: SceneID(scene)))
                 await changed()
                 return response(C.addSceneResponse, status, group, scene)
@@ -526,6 +524,8 @@ extension DeviceClusters {
                 let fromGroup = try group(request, 1), fromScene = try number(request, 2)
                 let toGroup = try group(request, 3), toScene = try number(request, 4)
                 @Sendable func copied(_ status: IMStatus) -> InvokeResult { response(C.copySceneResponse, status, fromGroup, fromScene) }
+                // Both scene ids are checked whatever the mode, before the groups, as connectedhomeip does.
+                guard fromScene <= 254, toScene <= 254 else { return copied(.constraintError) }
                 let (scenes, fabric, endpoint) = try await scope(context)
                 guard await valid(fromGroup, endpoint, fabric, context), await valid(toGroup, endpoint, fabric, context) else {
                     return copied(.invalidCommand)
@@ -541,7 +541,6 @@ extension DeviceClusters {
                         }
                         return .success
                     }
-                    guard fromScene <= 254, toScene <= 254 else { return .constraintError }
                     guard let scene = await scenes.scene(key(fromGroup, SceneID(fromScene))) else { return .notFound }
                     return await scenes.set(scene, for: key(toGroup, SceneID(toScene)))
                 }
