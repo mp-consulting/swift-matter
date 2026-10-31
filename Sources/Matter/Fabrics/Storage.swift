@@ -73,6 +73,7 @@ public enum StorageKey {
     public static let bridgeEndpoints = "bridge-endpoints"
     public static let groups = "groups"
     public static let groupCounters = "group-counters"
+    public static let scenes = "scenes"
     /// CASE resumption tickets: shared secrets, kept with the fabrics' keys.
     public static let resumptions = "resumptions"
 }

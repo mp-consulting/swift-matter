@@ -28,7 +28,7 @@ Clusters `23-27350-011`, Device Library `23-27351-011`; docs/specifications.md, 
 | `Sources/Matter/Commissioner` | `Commissioner`: a controller with its own fabric that verifies attestation, issues NOCs and completes commissioning (tests, tools) |
 | `Sources/Matter/Discovery` | `MDNSAdvertiser` (built-in mDNS responder on IPv4 and IPv6: `_matterc._udp` with subtypes, `_matter._tcp`), `MatterRecords`, `DNSMessage` (from homeswift) |
 | `Sources/Matter/Node` | `MatterNode`: storage, attestation, setup code, root endpoint, servers, advertising; `NodeConfiguration`, `NodeAdvertiser` |
-| `Sources/Matter/Bridge` | `MatterBridge` (Aggregator, persisted endpoint numbers, compound devices), `DeviceKind` presets and custom kinds, `DevicePart`, `BridgedDevice` (`update`, `set`, `emit`, `press`), `DeviceClusters` (application clusters), `DeviceCommand`/`DeviceState` |
+| `Sources/Matter/Bridge` | `MatterBridge` (Aggregator, persisted endpoint numbers, compound devices), `DeviceKind` presets and custom kinds, `DevicePart`, `BridgedDevice` (`update`, `set`, `emit`, `press`), `DeviceClusters` (application clusters), `Scenes` (the scene table, persisted) and `SceneEndpoint` (an endpoint's scene attributes, recalled through its clusters' commands), `DeviceCommand`/`DeviceState` |
 | `Sources/MatterBridgeDemo` | `matter-bridge-demo`: virtual lights, plug, thermometer and door |
 | `Scripts/generate-clusters.mjs` | Generates `Definitions.swift` from matter.js's model files (read as text, never executed) |
 | `Scripts/interop.sh` | Commissions the running demo with chip-tool and drives it |

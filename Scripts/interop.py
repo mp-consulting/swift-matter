@@ -33,6 +33,75 @@ def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + (f": {detail}" if detail else ""), flush=True)
 
 
+async def scenes(controller, lamp):
+    """Scenes Management on the color lamp, with connectedhomeip's own encoding of the commands and structures."""
+    Scenes = Clusters.ScenesManagement
+    Pair, Set = Scenes.Structs.AttributeValuePairStruct, Scenes.Structs.ExtensionFieldSetStruct
+
+    async def read(cluster, attribute):
+        return (await controller.ReadAttribute(NODE, [(lamp, attribute)]))[lamp][cluster][attribute]
+
+    async def state():
+        return (await read(Clusters.OnOff, Clusters.OnOff.Attributes.OnOff),
+                await read(Clusters.LevelControl, Clusters.LevelControl.Attributes.CurrentLevel),
+                await read(Clusters.ColorControl, Clusters.ColorControl.Attributes.ColorTemperatureMireds))
+
+    async def info():
+        reply = await controller.ReadAttribute(NODE, [(lamp, Scenes.Attributes.FabricSceneInfo)], fabricFiltered=True)
+        return reply[lamp][Scenes][Scenes.Attributes.FabricSceneInfo]
+
+    try:
+        await controller.SendCommand(NODE, lamp, Clusters.OnOff.Commands.On())
+        await controller.SendCommand(NODE, lamp, Clusters.LevelControl.Commands.MoveToLevel(
+            level=120, transitionTime=0, optionsMask=0, optionsOverride=0))
+        await controller.SendCommand(NODE, lamp, Clusters.ColorControl.Commands.MoveToColorTemperature(
+            colorTemperatureMireds=300, transitionTime=0, optionsMask=0, optionsOverride=0))
+        stored = await controller.SendCommand(NODE, lamp, Scenes.Commands.StoreScene(groupID=0, sceneID=1))
+        check("Scenes: StoreScene", stored.status == 0 and stored.sceneID == 1, repr(stored))
+
+        evening = [
+            Set(clusterID=Clusters.OnOff.id, attributeValueList=[Pair(attributeID=Clusters.OnOff.Attributes.OnOff.attribute_id, valueUnsigned8=0)]),
+            Set(clusterID=Clusters.LevelControl.id,
+                attributeValueList=[Pair(attributeID=Clusters.LevelControl.Attributes.CurrentLevel.attribute_id, valueUnsigned8=40)]),
+            Set(clusterID=Clusters.ColorControl.id, attributeValueList=[
+                Pair(attributeID=Clusters.ColorControl.Attributes.ColorTemperatureMireds.attribute_id, valueUnsigned16=400),
+                Pair(attributeID=Clusters.ColorControl.Attributes.EnhancedColorMode.attribute_id, valueUnsigned8=2)]),
+        ]
+        added = await controller.SendCommand(NODE, lamp, Scenes.Commands.AddScene(
+            groupID=0, sceneID=2, transitionTime=1500, sceneName="Evening", extensionFieldSetStructs=evening))
+        check("Scenes: AddScene", added.status == 0, repr(added))
+        view = await controller.SendCommand(NODE, lamp, Scenes.Commands.ViewScene(groupID=0, sceneID=2))
+        pairs = {(fields.clusterID, pair.attributeID): pair for fields in view.extensionFieldSetStructs for pair in fields.attributeValueList}
+        level = pairs.get((Clusters.LevelControl.id, Clusters.LevelControl.Attributes.CurrentLevel.attribute_id))
+        mireds = pairs.get((Clusters.ColorControl.id, Clusters.ColorControl.Attributes.ColorTemperatureMireds.attribute_id))
+        check("Scenes: ViewScene sends the scene back", view.status == 0 and view.sceneName == "Evening" and view.transitionTime == 1500
+              and level is not None and level.valueUnsigned8 == 40 and mireds is not None and mireds.valueUnsigned16 == 400, repr(view))
+
+        membership = await controller.SendCommand(NODE, lamp, Scenes.Commands.GetSceneMembership(groupID=0))
+        check("Scenes: GetSceneMembership", membership.status == 0 and sorted(membership.sceneList) == [1, 2], repr(membership))
+
+        await controller.SendCommand(NODE, lamp, Scenes.Commands.RecallScene(groupID=0, sceneID=2))
+        recalled = await state()
+        check("Scenes: RecallScene of an added scene", recalled == (False, 40, 400), f"on, level, mireds {recalled}")
+        await controller.SendCommand(NODE, lamp, Scenes.Commands.RecallScene(groupID=0, sceneID=1))
+        recalled = await state()
+        check("Scenes: RecallScene of a stored scene", recalled == (True, 120, 300), f"on, level, mireds {recalled}")
+        current = await info()
+        check("Scenes: FabricSceneInfo", len(current) == 1 and current[0].sceneCount == 2 and current[0].currentScene == 1
+              and current[0].sceneValid, repr(current))
+
+        await controller.SendCommand(NODE, lamp, Clusters.ColorControl.Commands.EnhancedMoveToHueAndSaturation(
+            enhancedHue=0x8040, saturation=200, transitionTime=0, optionsMask=0, optionsOverride=0))
+        hue = await read(Clusters.ColorControl, Clusters.ColorControl.Attributes.EnhancedCurrentHue)
+        check("ColorControl.EnhancedMoveToHueAndSaturation", hue == 0x8040, f"enhanced hue {hue:#x}")
+
+        removed = await controller.SendCommand(NODE, lamp, Scenes.Commands.RemoveAllScenes(groupID=0))
+        left = (await info())[0].sceneCount
+        check("Scenes: RemoveAllScenes", removed.status == 0 and left == 0, f"{removed!r}, {left} left")
+    except Exception as error:  # noqa: BLE001
+        check("Scenes", False, repr(error))
+
+
 async def main():
     chip.native.Init()
     stack = ChipStack(persistentStoragePath=f"{SCRATCH}/chip-controller.json", enableServerInteractions=False)
@@ -88,6 +157,8 @@ async def main():
     except asyncio.TimeoutError:
         check("subscription reports a change", False, "no report in 10 s")
     subscription.Shutdown()
+
+    await scenes(controller, bridged[1])
 
     fabrics = await controller.ReadAttribute(NODE, [(0, Clusters.OperationalCredentials.Attributes.Fabrics)], fabricFiltered=True)
     check("read the fabric list", len(fabrics[0][Clusters.OperationalCredentials][Clusters.OperationalCredentials.Attributes.Fabrics]) == 1)

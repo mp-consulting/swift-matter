@@ -11,6 +11,16 @@ Before 1.0, a minor version may change the API.
 - A changelog, contribution guide, security policy, code of conduct, issue and pull request templates, and Dependabot
   for the Swift packages and the workflows' actions.
 - docs/specifications.md: the Matter 1.6.1 documents the code cites, and where to download them.
+- Scenes on lights and plugs: Scenes Management stores, recalls, copies and removes scenes of their On/Off, Level
+  Control and Color Control state, per fabric and group, with names, kept in storage (`MatterNode.scenes`). On/Off's
+  OffWithEffect and OnWithRecallGlobalScene store and recall the global scene. A group's scenes go when the endpoint
+  leaves the group.
+- Extended color lights support enhanced hue (EnhancedMoveToHue, EnhancedMoveToHueAndSaturation), so a scene keeps
+  their hue.
+
+### Changed
+
+- `AccessContext` and `InteractionServer` take the node's `Scenes`, as they take its `Groups`.
 
 ### Fixed
 

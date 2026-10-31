@@ -23,7 +23,7 @@ extension DeviceKind {
     /// the handler to open or close it, Stop to stop; the closure reports where it is with `DeviceState.closure`.
     public static func closure(_ kind: ClosureKind) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.closure], tags: [SemanticTag(namespace: ClosureKind.namespace, tag: kind.rawValue)]) { handler in
-            await base(handler, actuator: false) + [await DeviceClusters.closureControl(handler)]
+            await base(handler, groups: false) + [await DeviceClusters.closureControl(handler)]
         }
     }
 }

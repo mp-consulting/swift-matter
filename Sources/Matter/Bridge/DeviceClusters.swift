@@ -70,7 +70,7 @@ enum DeviceClusters {
         return cluster
     }
 
-    // MARK: - Groups (§1.3) and Scenes Management (§1.4)
+    // MARK: - Groups (§1.3); Scenes Management (§1.4) is in Scenes.swift
 
     /// Groups without capacity: group communication is not supported, so every add fails with RESOURCE_EXHAUSTED.
     /// Groups (Application Clusters §1.3): the endpoint's memberships in the node's `Groups`, with names. A group
@@ -128,53 +128,17 @@ enum DeviceClusters {
             C.removeGroup: { cluster, fields, context in
                 let (groups, fabric, endpoint) = try await scope(cluster, context)
                 let id = try group(fields)
-                return status(C.removeGroupResponse, await groups.remove(id, endpoint: endpoint, fabric: fabric), id)
+                let removed = await groups.remove(id, endpoint: endpoint, fabric: fabric)
+                // The group's scenes on the endpoint go with it.
+                if removed == .success { _ = await context.scenes?.removeGroup(id, endpoint: endpoint, fabric: fabric) }
+                return status(C.removeGroupResponse, removed, id)
             },
             C.removeAllGroups: { cluster, _, context in
                 let (groups, fabric, endpoint) = try await scope(cluster, context)
+                let left = await groups.groups(of: endpoint, fabric: fabric)
                 await groups.removeAll(endpoint: endpoint, fabric: fabric)
+                for id in left { _ = await context.scenes?.removeGroup(id, endpoint: endpoint, fabric: fabric) }
                 return .success
-            },
-        ])
-        return cluster
-    }
-
-    /// Scenes without stored scenes: every fabric sees an empty table.
-    static func scenes() async -> AttributeCluster {
-        typealias A = ScenesManagementCluster.Attribute
-        typealias C = ScenesManagementCluster.Command
-        let cluster = AttributeCluster(ScenesManagementCluster.definition, attributes: [A.sceneTableSize: .unsigned(16)])
-        await cluster.provide(A.fabricSceneInfo) { context in
-            typealias Info = ScenesManagementCluster.SceneInfoStruct
-            guard let fabric = context.fabricIndex else { return .array([]) }
-            return .array([TLVElement(.structure([
-                .field(Info.sceneCount, .unsigned(0)), .field(Info.currentScene, .unsigned(0)), .field(Info.currentGroup, .unsigned(0)),
-                .field(Info.sceneValid, .bool(false)), .field(Info.remainingCapacity, .unsigned(16)),
-                .field(Info.fabricIndex, .unsigned(UInt64(fabric))),
-            ]))])
-        }
-        @Sendable func response(_ command: CommandID, _ status: IMStatus, _ fields: TLVValue, scene: Bool = true) -> InvokeResult {
-            var result: [TLVElement] = [.field(0, .unsigned(UInt64(status.rawValue))), .field(1, .unsigned(fields[0]?.uint ?? 0))]
-            if scene { result.append(.field(2, .unsigned(fields[1]?.uint ?? 0))) }
-            return .response(command, .structure(result))
-        }
-        await cluster.handle([
-            C.addScene: { _, fields, _ in response(C.addSceneResponse, .resourceExhausted, fields) },
-            C.viewScene: { _, fields, _ in response(C.viewSceneResponse, .notFound, fields) },
-            C.removeScene: { _, fields, _ in response(C.removeSceneResponse, .notFound, fields) },
-            C.removeAllScenes: { _, fields, _ in response(C.removeAllScenesResponse, .success, fields, scene: false) },
-            C.storeScene: { _, fields, _ in response(C.storeSceneResponse, .resourceExhausted, fields) },
-            C.recallScene: { _, _, _ in throw StatusError(.notFound) },
-            C.getSceneMembership: { _, fields, _ in
-                .response(C.getSceneMembershipResponse, .structure([
-                    .field(0, .unsigned(0)), .field(1, .unsigned(16)), .field(2, .unsigned(fields[0]?.uint ?? 0)), .field(3, .array([])),
-                ]))
-            },
-            C.copyScene: { _, fields, _ in
-                .response(C.copySceneResponse, .structure([
-                    .field(0, .unsigned(UInt64(IMStatus.resourceExhausted.rawValue))), .field(1, .unsigned(fields[1]?.uint ?? 0)),
-                    .field(2, .unsigned(fields[2]?.uint ?? 0)),
-                ]))
             },
         ])
         return cluster
@@ -182,7 +146,8 @@ enum DeviceClusters {
 
     // MARK: - On/Off (§1.5)
 
-    static func onOff(lighting: Bool, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
+    /// With `scenes`, OffWithEffect stores the global scene and OnWithRecallGlobalScene recalls it (§1.5).
+    static func onOff(lighting: Bool, scenes: SceneEndpoint? = nil, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
         typealias A = OnOffCluster.Attribute
         typealias C = OnOffCluster.Command
         var attributes: [AttributeID: TLVValue] = [A.onOff: .bool(false)]
@@ -200,8 +165,21 @@ enum DeviceClusters {
         await cluster.handle(C.off) { cluster, _, _ in try await set(cluster, false) }
         await cluster.handle(C.toggle) { cluster, _, _ in try await set(cluster, !(await cluster.value(A.onOff)?.bool ?? false)) }
         if lighting {
-            await cluster.handle(C.offWithEffect) { cluster, _, _ in try await set(cluster, false) }
-            await cluster.handle(C.onWithRecallGlobalScene) { cluster, _, _ in try await set(cluster, true) }
+            // GlobalSceneControl: true until OffWithEffect stores the global scene, false until it is recalled.
+            await cluster.handle(C.offWithEffect) { cluster, _, context in
+                if await cluster.value(A.globalSceneControl)?.bool == true {
+                    await scenes?.storeGlobal(context: context)
+                    await cluster.set(A.globalSceneControl, .bool(false))
+                }
+                return try await set(cluster, false)
+            }
+            await cluster.handle(C.onWithRecallGlobalScene) { cluster, _, context in
+                if await cluster.value(A.globalSceneControl)?.bool == false {
+                    try await scenes?.recallGlobal(context: context)
+                    await cluster.set(A.globalSceneControl, .bool(true))
+                }
+                return try await set(cluster, true)
+            }
             await cluster.handle(C.onWithTimedOff) { cluster, fields, _ in
                 // Accept-only-when-on (bit 0 of the control) leaves an off light off.
                 if (fields[0]?.uint ?? 0) & 1 == 1, await cluster.value(A.onOff)?.bool != true { return .success }
@@ -261,9 +239,10 @@ enum DeviceClusters {
     static func colorControl(hueSaturation: Bool, temperatureRange: ClosedRange<UInt16>, _ handler: @escaping DeviceCommandHandler) async -> AttributeCluster {
         typealias A = ColorControlCluster.Attribute
         typealias C = ColorControlCluster.Command
-        // Extended color lights support XY as well (Device Library §4.4); color temperature lights only CT.
+        // Extended color lights support XY and enhanced hue as well (Device Library §4.4), so scenes keep their hue in
+        // EnhancedCurrentHue; color temperature lights only CT.
         var features: ColorControlCluster.Feature = [.colorTemperature]
-        if hueSaturation { features.formUnion([.hueSaturation, .xy]) }
+        if hueSaturation { features.formUnion([.hueSaturation, .enhancedHue, .xy]) }
         var attributes: [AttributeID: TLVValue] = [
             A.remainingTime: .unsigned(0), A.colorMode: .unsigned(2), A.enhancedColorMode: .unsigned(2), A.options: .unsigned(0),
             A.numberOfPrimaries: .null, A.colorCapabilities: .unsigned(UInt64(features.rawValue)),
@@ -273,8 +252,8 @@ enum DeviceClusters {
             A.coupleColorTempToLevelMinMireds: .unsigned(UInt64(temperatureRange.lowerBound)), A.startUpColorTemperatureMireds: .null,
         ]
         if hueSaturation {
-            attributes.merge([A.currentHue: .unsigned(0), A.currentSaturation: .unsigned(0), A.currentX: .unsigned(0x616B),
-                              A.currentY: .unsigned(0x607D)]) { $1 }
+            attributes.merge([A.currentHue: .unsigned(0), A.enhancedCurrentHue: .unsigned(0), A.currentSaturation: .unsigned(0),
+                              A.currentX: .unsigned(0x616B), A.currentY: .unsigned(0x607D)]) { $1 }
         }
         let cluster = AttributeCluster(ColorControlCluster.definition, featureMap: features.rawValue, attributes: attributes)
 
@@ -298,7 +277,26 @@ enum DeviceClusters {
             await cluster.set(hueSaturationValues(hue: newHue, saturation: newSaturation))
             return .success
         }
+        /// An enhanced hue (0...65535) reaches the device as its upper byte, the hue it has.
+        @Sendable func enhanced(_ cluster: AttributeCluster, hue: UInt16, saturation: UInt64?) async throws -> InvokeResult {
+            let newHue = UInt8(min(254, hue >> 8))
+            let currentSaturation = await cluster.value(A.currentSaturation)?.uint ?? 0
+            let newSaturation = UInt8(min(254, saturation ?? currentSaturation))
+            try await deliver(.setHueSaturation(hue: newHue, saturation: newSaturation), to: handler)
+            var values = hueSaturationValues(hue: newHue, saturation: newSaturation)
+            values[A.enhancedCurrentHue] = .unsigned(UInt64(hue))
+            values[A.enhancedColorMode] = .unsigned(ColorControlCluster.EnhancedColorModeEnum.enhancedCurrentHueAndCurrentSaturation)
+            await cluster.set(values)
+            return .success
+        }
         await cluster.handle(C.moveToHue) { cluster, fields, _ in try await hueSat(cluster, hue: try TLVStruct(fields).uint(0), saturation: nil) }
+        await cluster.handle(C.enhancedMoveToHue) { cluster, fields, _ in
+            try await enhanced(cluster, hue: try TLVStruct(fields).uint(0, as: UInt16.self), saturation: nil)
+        }
+        await cluster.handle(C.enhancedMoveToHueAndSaturation) { cluster, fields, _ in
+            let request = try TLVStruct(fields)
+            return try await enhanced(cluster, hue: try request.uint(0, as: UInt16.self), saturation: try request.uint(1))
+        }
         await cluster.handle(C.moveToSaturation) { cluster, fields, _ in try await hueSat(cluster, hue: nil, saturation: try TLVStruct(fields).uint(0)) }
         await cluster.handle(C.moveToHueAndSaturation) { cluster, fields, _ in
             let request = try TLVStruct(fields)
@@ -312,7 +310,7 @@ enum DeviceClusters {
                                A.enhancedColorMode: .unsigned(1)])
             return .success
         }
-        for command in [C.moveHue, C.stepHue, C.moveSaturation, C.stepSaturation, C.moveColor, C.stepColor] {
+        for command in [C.moveHue, C.stepHue, C.moveSaturation, C.stepSaturation, C.moveColor, C.stepColor, C.enhancedMoveHue, C.enhancedStepHue] {
             await cluster.handle(command) { _, _, _ in .success }
         }
         return cluster
@@ -327,8 +325,8 @@ enum DeviceClusters {
     /// A hue and saturation and the color mode they put the light in (ColorMode 0).
     static func hueSaturationValues(hue: UInt8, saturation: UInt8) -> [AttributeID: TLVValue] {
         typealias A = ColorControlCluster.Attribute
-        return [A.currentHue: .unsigned(UInt64(min(hue, 254))), A.currentSaturation: .unsigned(UInt64(min(saturation, 254))),
-                A.colorMode: .unsigned(0), A.enhancedColorMode: .unsigned(0)]
+        return [A.currentHue: .unsigned(UInt64(min(hue, 254))), A.enhancedCurrentHue: .unsigned(UInt64(min(hue, 254)) << 8),
+                A.currentSaturation: .unsigned(UInt64(min(saturation, 254))), A.colorMode: .unsigned(0), A.enhancedColorMode: .unsigned(0)]
     }
 
     // MARK: - Sensors (§2)

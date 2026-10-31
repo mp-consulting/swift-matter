@@ -55,7 +55,8 @@ report, the fabric list and a resumed CASE session. Apple Home commissions and c
 - Matter over IP only: no Bluetooth (BTP), Thread or Wi-Fi PAF commissioning; the node must already be on the network.
 - Groups take trust-first and cache-and-sync keys (MCSP); Groupcast as a listener only (no sender). No OTA (it needs a
   vendor ID of its own), no ICD (sleepy device) support. TCP (`NodeConfiguration.tcp`) is off by default.
-- Scenes are reported with an empty table; level and color transitions complete at once.
+- Scenes keep On/Off, Level Control and Color Control state; level and color transitions (and a scene's transition
+  time) complete at once.
 
 ## Certification
 
