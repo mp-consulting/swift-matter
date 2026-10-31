@@ -17,13 +17,16 @@ public actor InteractionServer: ProtocolHandler {
 
     /// The node's groups: the Groups cluster's store, and where group messages go.
     private let groups: Groups?
+    /// The node's scene table, for the Scenes Management cluster.
+    private let scenes: Scenes?
 
     public init(dataModel: DataModel, accessControl: any AccessController, payloadLimit: Int = 1024, groups: Groups? = nil,
-                logger: Logger = Logger(label: "matter.im")) {
+                scenes: Scenes? = nil, logger: Logger = Logger(label: "matter.im")) {
         self.dataModel = dataModel
         self.accessControl = accessControl
         self.payloadLimit = payloadLimit
         self.groups = groups
+        self.scenes = scenes
         self.logger = logger
     }
 
@@ -94,7 +97,7 @@ public actor InteractionServer: ProtocolHandler {
         guard let groups, let group = session.groupID, let fabric = session.fabricIndex,
               let fields = try? TLVStruct(decoding: message.payload), fields[1]?.bool != true else { return }
         let members = await groups.endpoints(of: group, fabric: fabric)
-        let context = AccessContext(session: session, groups: groups)
+        let context = AccessContext(session: session, groups: groups, scenes: scenes)
         let testing = groups.isTesting
         /// A path's endpoint when it is a member, or every member: an endpoint without the cluster answers
         /// `unsupportedCluster`, which a group ignores like any other status.
@@ -182,7 +185,7 @@ public actor InteractionServer: ProtocolHandler {
     func attributeReports(_ paths: [AttributePath], session: SessionInfo, fabricFiltered: Bool,
                           filters: [DataVersionFilter] = [], only: Set<ConcreteAttribute>? = nil) async -> [AttributeReport] {
         var reports: [AttributeReport] = []
-        let context = AccessContext(session: session, isFabricFiltered: fabricFiltered, groups: groups)
+        let context = AccessContext(session: session, isFabricFiltered: fabricFiltered, groups: groups, scenes: scenes)
         var seen = Set<ConcreteAttribute>()
 
         func filtered(_ endpoint: EndpointNumber, _ cluster: ClusterID, _ version: UInt32) -> Bool {
@@ -347,7 +350,7 @@ public actor InteractionServer: ProtocolHandler {
             try checkTimed(fields.bool(1), deadline: isFirstChunk ? timedDeadline : nil, timed: timedDeadline != nil)
             isFirstChunk = false
             let session = await exchange.session
-            let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange, groups: groups)
+            let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange, groups: groups, scenes: scenes)
             var statuses: [TLVElement] = []
             for element in try fields.elements(2) {
                 let data = try TLVStruct(element.value)
@@ -417,7 +420,7 @@ public actor InteractionServer: ProtocolHandler {
         let requests = try fields.elements(2)
         guard !requests.isEmpty else { throw StatusError(.invalidAction) }
         let session = await exchange.session
-        let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange, groups: groups)
+        let context = AccessContext(session: session, isTimed: timedDeadline != nil, exchange: exchange, groups: groups, scenes: scenes)
         var responses: [TLVElement] = []
         for request in requests {
             let data = try TLVStruct(request.value)

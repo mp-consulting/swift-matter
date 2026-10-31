@@ -11,15 +11,19 @@ public struct AccessContext: Sendable {
     public var exchange: Exchange?
     /// The node's groups, for the Groups cluster.
     public var groups: Groups?
+    /// The node's scene table, for the Scenes Management cluster.
+    public var scenes: Scenes?
     /// The privilege the session holds on the command's cluster, for commands whose fields need more than the command.
     public var privilege: Privilege?
 
-    public init(session: SessionInfo, isFabricFiltered: Bool = true, isTimed: Bool = false, exchange: Exchange? = nil, groups: Groups? = nil) {
+    public init(session: SessionInfo, isFabricFiltered: Bool = true, isTimed: Bool = false, exchange: Exchange? = nil, groups: Groups? = nil,
+                scenes: Scenes? = nil) {
         self.session = session
         self.isFabricFiltered = isFabricFiltered
         self.isTimed = isTimed
         self.exchange = exchange
         self.groups = groups
+        self.scenes = scenes
     }
 
     public var fabricIndex: FabricIndex? { session.fabricIndex }

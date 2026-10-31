@@ -21,33 +21,37 @@ public struct DeviceKind: Sendable {
         self.makeClusters = makeClusters
     }
 
-    /// Identify, and Groups and Scenes Management for devices that act (Device Library §4-5); `groups` alone for a
-    /// device that takes group commands without scenes (a fan).
-    static func base(_ handler: @escaping DeviceCommandHandler, actuator: Bool, groups: Bool? = nil) async -> [any ClusterHandler] {
+    /// Identify, and Groups for devices that take group commands (Device Library §4-5); Scenes Management with
+    /// `scenes`, for devices whose state scenes keep (lights and plugs).
+    static func base(_ handler: @escaping DeviceCommandHandler, groups: Bool, scenes: SceneEndpoint? = nil) async -> [any ClusterHandler] {
         let identify = await DeviceClusters.identify(handler)
         var clusters: [any ClusterHandler] = [identify]
-        if groups ?? actuator {
+        if groups {
             clusters.append(await DeviceClusters.groups { await identify.value(IdentifyCluster.Attribute.identifyTime)?.uint ?? 0 > 0 })
         }
-        if actuator { clusters.append(await DeviceClusters.scenes()) }
+        if let scenes { clusters.append(await DeviceClusters.scenes(scenes)) }
         return clusters
     }
 
-    /// Lights and plugs: On/Off, and Level Control and Color Control as the type needs.
+    /// Lights and plugs: On/Off, and Level Control and Color Control as the type needs, with scenes of their state.
     static func switched(_ type: DeviceType, lighting: Bool, dimmable: Bool, color: (range: ClosedRange<UInt16>, hueSaturation: Bool)? = nil) -> DeviceKind {
         DeviceKind(deviceTypes: [type]) { handler in
-            let onOff = await DeviceClusters.onOff(lighting: lighting, handler)
-            var clusters = await base(handler, actuator: true) + [onOff]
+            let scenes = SceneEndpoint()
+            // A command to the device makes the scene it was in no longer valid.
+            let handler = scenes.invalidating(handler)
+            let onOff = await DeviceClusters.onOff(lighting: lighting, scenes: scenes, handler)
+            var clusters: [any ClusterHandler] = [onOff]
             if dimmable { clusters.append(await DeviceClusters.levelControl(onOff: onOff, handler)) }
             if let color {
                 clusters.append(await DeviceClusters.colorControl(hueSaturation: color.hueSaturation, temperatureRange: color.range, handler))
             }
-            return clusters
+            await scenes.adopt(clusters)
+            return await base(handler, groups: true, scenes: scenes) + clusters
         }
     }
 
     static func sensor(_ type: DeviceType, _ make: @escaping @Sendable () -> any ClusterHandler) -> DeviceKind {
-        DeviceKind(deviceTypes: [type]) { handler in await base(handler, actuator: false) + [make()] }
+        DeviceKind(deviceTypes: [type]) { handler in await base(handler, groups: false) + [make()] }
     }
 
     public static let onOffLight = switched(DeviceTypes.onOffLight, lighting: true, dimmable: false)
@@ -73,26 +77,26 @@ public struct DeviceKind: Sendable {
         DeviceClusters.measurement(IlluminanceMeasurementCluster.definition, value: .null, minimum: .unsigned(1), maximum: .unsigned(0xFFFE))
     }
     public static let windowCovering = DeviceKind(deviceTypes: [DeviceTypes.windowCovering]) { handler in
-        await base(handler, actuator: false) + [await DeviceClusters.windowCovering(handler)]
+        await base(handler, groups: false) + [await DeviceClusters.windowCovering(handler)]
     }
     public static let fan = DeviceKind.fan(rocking: false, airflowDirection: false)
     /// A fan that rocks left and right, or reverses its airflow: its commands and `DeviceState.fanRocking` and
     /// `.fanAirflowReversed` say so.
     public static func fan(rocking: Bool, airflowDirection: Bool) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.fan]) { handler in
-            await base(handler, actuator: false, groups: true) + [await DeviceClusters.fanControl(rocking: rocking, airflowDirection: airflowDirection, handler)]
+            await base(handler, groups: true) + [await DeviceClusters.fanControl(rocking: rocking, airflowDirection: airflowDirection, handler)]
         }
     }
     /// `auto` (with heating and cooling) adds SystemMode auto, which keeps the room between its heating and cooling
     /// setpoints.
     public static func thermostat(heating: Bool = true, cooling: Bool = false, auto: Bool = false) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.thermostat]) { handler in
-            await base(handler, actuator: false) + [await DeviceClusters.thermostat(heating: heating, cooling: cooling, auto: auto, handler)]
+            await base(handler, groups: false) + [await DeviceClusters.thermostat(heating: heating, cooling: cooling, auto: auto, handler)]
         }
     }
     /// Locking and unlocking need a timed interaction, as the Door Lock cluster requires (§5.2.10).
     public static let doorLock = DeviceKind(deviceTypes: [DeviceTypes.doorLock]) { handler in
-        await base(handler, actuator: false) + [await DeviceClusters.doorLock(handler)]
+        await base(handler, groups: false) + [await DeviceClusters.doorLock(handler)]
     }
     /// A button: presses are reported with `BridgedDevice.press`.
     public static let genericSwitch = sensor(DeviceTypes.genericSwitch) { DeviceClusters.genericSwitch() }
@@ -100,14 +104,14 @@ public struct DeviceKind: Sendable {
     /// An air quality sensor that measures these concentrations too (`DeviceState.concentration`).
     public static func airQualitySensor(measuring concentrations: [Concentration]) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.airQualitySensor]) { handler in
-            await base(handler, actuator: false) + [DeviceClusters.airQuality()] + concentrations.map(DeviceClusters.concentration)
+            await base(handler, groups: false) + [DeviceClusters.airQuality()] + concentrations.map(DeviceClusters.concentration)
         }
     }
     /// An air purifier: its fan as a fan's, and with `filter` its HEPA filter's condition (`DeviceState.filter`), whose
     /// reset (a new filter) goes to the handler.
     public static func airPurifier(filter: Bool = false, rocking: Bool = false, airflowDirection: Bool = false) -> DeviceKind {
         DeviceKind(deviceTypes: [DeviceTypes.airPurifier]) { handler in
-            var clusters = await base(handler, actuator: false) + [await DeviceClusters.fanControl(rocking: rocking, airflowDirection: airflowDirection, handler)]
+            var clusters = await base(handler, groups: false) + [await DeviceClusters.fanControl(rocking: rocking, airflowDirection: airflowDirection, handler)]
             if filter { clusters.append(await DeviceClusters.hepaFilter(handler)) }
             return clusters
         }
@@ -117,13 +121,13 @@ public struct DeviceKind: Sendable {
     }
     /// Opening and closing go to the handler; the valve's state comes back with `DeviceState.valveOpen`.
     public static let waterValve = DeviceKind(deviceTypes: [DeviceTypes.waterValve]) { handler in
-        await base(handler, actuator: false) + [await DeviceClusters.valve(handler)]
+        await base(handler, groups: false) + [await DeviceClusters.valve(handler)]
     }
 
     /// A robot vacuum: cleaning starts and stops through RVC Run Mode, and it pauses, resumes and goes home through RVC
     /// Operational State; it reports its state with `DeviceState.robot`.
     public static let roboticVacuum = DeviceKind(deviceTypes: [DeviceTypes.roboticVacuumCleaner]) { handler in
-        await base(handler, actuator: false) + [await DeviceClusters.rvcRunMode(handler), await DeviceClusters.rvcOperationalState(handler)]
+        await base(handler, groups: false) + [await DeviceClusters.rvcRunMode(handler), await DeviceClusters.rvcOperationalState(handler)]
     }
 
     /// The same device measuring its power and energy too: an Electrical Sensor on its endpoint (Device Library §2.5),

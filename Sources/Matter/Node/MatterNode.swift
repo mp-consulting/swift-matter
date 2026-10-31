@@ -76,6 +76,8 @@ public actor MatterNode {
     public nonisolated let setupPayload: SetupPayload
     /// Group keys, the GroupKeyMap and memberships (Core §4.16, §4.17).
     public nonisolated let groups: Groups
+    /// The scenes of the node's endpoints (Scenes Management).
+    public nonisolated let scenes: Scenes
     let advertiser: (any NodeAdvertiser)?
     let logger: Logger
     private let verifier: PASEVerifier
@@ -101,6 +103,7 @@ public actor MatterNode {
         fabrics = await FabricTable(storage: storage)
         accessControl = await AccessControlEntries(storage: storage)
         groups = await Groups(storage: storage, fabrics: fabrics)
+        scenes = await Scenes(storage: storage)
         commissioning = Commissioning(fabrics: fabrics, accessControl: accessControl, attestation: attestation, logger: logger)
         var parameters = SessionParameters.default
         if configuration.tcp { parameters.supportedTransports = .tcpServer }
@@ -110,7 +113,7 @@ public actor MatterNode {
         layer = MessageLayer(transport: transport ?? defaultTransport, parameters: parameters, reliability: configuration.reliability,
                              groups: groups)
         dataModel = DataModel()
-        interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl, groups: groups)
+        interactionServer = InteractionServer(dataModel: dataModel, accessControl: accessControl, groups: groups, scenes: scenes)
 
         let root = await RootClusters.make(information: information, commissioning: commissioning, fabrics: fabrics,
                                            accessControl: accessControl, attestation: attestation, startTime: .now, storage: storage,
@@ -155,10 +158,11 @@ public actor MatterNode {
         await fabrics.onChange { await advertise($0) }
         let layer = layer, fabrics = fabrics, verifier = verifier
         let discriminator = setupPayload.discriminator, timeout = configuration.initialWindowTimeout
-        let groups = groups
+        let groups = groups, scenes = scenes
         await commissioning.onFabricRemoved { index, delay in
             await resumptions.removeFabric(index)
             await groups.removeFabric(index)
+            await scenes.removeFabric(index)
             Task {
                 if delay > .zero { try? await Task.sleep(for: delay) }
                 await layer.removeSessions { $0.fabricIndex == index }
@@ -201,6 +205,7 @@ public actor MatterNode {
     public func remove(endpoint: EndpointNumber) async throws {
         try await dataModel.remove(endpoint)
         await groups.removeEndpoint(endpoint)
+        await scenes.removeEndpoint(endpoint)
     }
 
     // MARK: - Identity
