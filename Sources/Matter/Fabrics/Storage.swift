@@ -50,11 +50,14 @@ public actor FileStorage: MatterStorage {
             return
         }
         let temporary = file.appendingPathExtension("tmp")
-        FileManager.default.createFile(atPath: temporary.path, contents: Data(value), attributes: [.posixPermissions: 0o600])
-        if FileManager.default.fileExists(atPath: file.path) {
-            _ = try FileManager.default.replaceItemAt(file, withItemAt: temporary)
-        } else {
-            try FileManager.default.moveItem(at: temporary, to: file)
+        guard FileManager.default.createFile(atPath: temporary.path, contents: Data(value), attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary.path])
+        }
+        // rename(2) replaces the file atomically; swift-corelibs-foundation's replaceItemAt fails on Linux.
+        guard rename(temporary.path, file.path) == 0 else {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
         }
     }
 }

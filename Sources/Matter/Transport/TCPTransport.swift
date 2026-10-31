@@ -40,15 +40,14 @@ public final class TCPTransport: MatterTransport {
         state.withLockedValue { $0.inbox = inbox }
         guard let port else { return }
         let bound: Channel
-        do {
-            bound = try await ServerBootstrap(group: group)
+        let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(.socketOption(.so_keepalive), value: 1)
             .childChannelInitializer { [self] channel in
                 channel.eventLoop.makeCompletedFuture { try self.attach(channel) }
             }
-            .bind(host: "::", port: port)
-            .get()
+        do {
+            bound = try await UDPTransport.bindDualStack(port: port) { try await bootstrap.bind(host: $0, port: $1).get() }
         } catch {
             state.withLockedValue { $0.inbox = nil }
             inbox.close()

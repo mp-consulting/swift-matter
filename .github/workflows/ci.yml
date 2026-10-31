@@ -10,7 +10,7 @@ jobs:
   macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build and test
         run: swift test
       - name: Lint
@@ -20,19 +20,28 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:6.1
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build and test
         run: swift test
       - name: Lint
         run: bin/dev lint
 
   interop:
-    # connectedhomeip's own controller commissions the demo and drives it (bin/dev interop-python). macOS: the
-    # controller's wheels find the demo over the system's DNS-SD there, without an Avahi daemon to run.
-    runs-on: macos-15
+    # connectedhomeip's own controller commissions the demo and drives it (bin/dev interop-python). Linux: on the macOS
+    # runners, Local Network privacy refuses the controller's mDNS sends ("No route to host"). The controller's built-in
+    # mDNS needs no Avahi daemon, but IPv6 (on in the container), its shared libraries and a writable /data.
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.1
+      options: --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.default.disable_ipv6=0
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install the controller's libraries
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq libglib2.0-0 libnl-3-200 libnl-route-3-200
+          mkdir -p /data
       - name: Commission the demo with connectedhomeip's controller
         timeout-minutes: 20
         run: bin/dev interop-python

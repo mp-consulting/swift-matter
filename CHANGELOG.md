@@ -22,6 +22,12 @@ Before 1.0, a minor version may change the API.
 
 - `AccessContext` and `InteractionServer` take the node's `Scenes`, as they take its `Groups`.
 
+### Fixed
+
+- The UDP and TCP transports listen on IPv4 alone when the host has no IPv6 (a container without it), instead of
+  failing to start.
+- `FileStorage` replaces a key's file with rename(2): Foundation's `replaceItemAt` failed on Linux.
+
 ## [0.5.0] - 2026-10-30
 
 ### Added
