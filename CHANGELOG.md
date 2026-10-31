@@ -12,6 +12,12 @@ Before 1.0, a minor version may change the API.
   for the Swift packages and the workflows' actions.
 - docs/specifications.md: the Matter 1.6.1 documents the code cites, and where to download them.
 
+### Fixed
+
+- The UDP and TCP transports listen on IPv4 alone when the host has no IPv6 (a container without it), instead of
+  failing to start.
+- `FileStorage` replaces a key's file with rename(2): Foundation's `replaceItemAt` failed on Linux.
+
 ## [0.5.0] - 2026-10-30
 
 ### Added

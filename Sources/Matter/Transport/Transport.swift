@@ -83,14 +83,14 @@ public final class UDPTransport: MatterTransport {
     public func start(receive: @escaping @Sendable ([UInt8], PeerAddress) async -> Void) async throws {
         let inbox = DatagramInbox(receive: receive)
         let bound: Channel
+        let bootstrap = DatagramBootstrap(group: group)
+            .channelOption(.socketOption(.so_reuseaddr), value: 1)
+            .channelInitializer { channel in
+                channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Inbound(inbox: inbox)) }
+            }
         do {
-            bound = try await DatagramBootstrap(group: group)
-                .channelOption(.socketOption(.so_reuseaddr), value: 1)
-                .channelInitializer { channel in
-                    channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Inbound(inbox: inbox)) }
-                }
-                .bind(host: "::", port: port)
-                .get()
+            // IPv4 alone where the host has no IPv6 (a container without it, for one).
+            bound = try await Self.bindDualStack(port: port) { try await bootstrap.bind(host: $0, port: $1).get() }
         } catch {
             inbox.close()
             throw error
@@ -102,7 +102,7 @@ public final class UDPTransport: MatterTransport {
     public func send(_ datagram: [UInt8], to peer: PeerAddress) async throws {
         guard case .socket(let address) = peer, let channel = channel.withLockedValue({ $0 }) else { return }
         // A dual-stack socket reaches IPv4 peers through their IPv4-mapped IPv6 address.
-        let target = address.protocol == .inet ? try Self.mapped(address) : address
+        let target = address.protocol == .inet && channel.localAddress?.protocol == .inet6 ? try Self.mapped(address) : address
         let envelope = AddressedEnvelope(remoteAddress: target, data: channel.allocator.buffer(bytes: datagram))
         try await channel.writeAndFlush(envelope)
     }
@@ -143,6 +143,15 @@ public final class UDPTransport: MatterTransport {
               let port = address.port, let v4 = try? SocketAddress(ipAddress: String(ip.dropFirst(7)), port: port)
         else { return address }
         return v4
+    }
+
+    /// Binds to `::`, or to `0.0.0.0` when the host has no IPv6 to bind to.
+    static func bindDualStack(port: Int, _ bind: (String, Int) async throws -> Channel) async throws -> Channel {
+        do {
+            return try await bind("::", port)
+        } catch {
+            return try await bind("0.0.0.0", port)
+        }
     }
 
     static func mapped(_ address: SocketAddress) throws -> SocketAddress {

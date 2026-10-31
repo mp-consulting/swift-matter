@@ -46,7 +46,7 @@ listed in [CHANGELOG.md](CHANGELOG.md); report vulnerabilities privately ([SECUR
 ## Interoperability
 
 `bin/dev interop-python` (and CI, on every change) runs the demo, commissions it with connectedhomeip's own
-controller (Home Assistant's build, 2025.7.0) and drives it. On macOS 27 it passes: discovery over DNS-SD, PASE, device attestation against the test PAA,
+controller (Home Assistant's build, 2025.7.0) and drives it. On macOS 27 and Linux it passes: discovery over DNS-SD, PASE, device attestation against the test PAA,
 the operational certificate and CASE, reads (and a wildcard read across the bridged devices), invokes, a subscription
 report, the fabric list and a resumed CASE session. Apple Home commissions and controls it; Google Home and Alexa have not been tried yet.
 
