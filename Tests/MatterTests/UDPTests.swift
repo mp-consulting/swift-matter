@@ -12,7 +12,7 @@ struct UDPTests {
         let port = try #require(nodeTransport.localPort)
 
         let controllerLayer = MessageLayer(transport: UDPTransport(port: 0), reliability: .fast)
-        let commissioner = try Commissioner(layer: controllerLayer, fabricID: 7, nodeID: 0x99)
+        let commissioner = try Commissioner(layer: controllerLayer, fabricID: 7, nodeID: 0x99, trustStore: .test)
         try await commissioner.start()
         // Over IPv4 loopback: the dual-stack socket maps it to ::ffff:127.0.0.1.
         let session = try await commissioner.commission(.socket(try SocketAddress(ipAddress: "127.0.0.1", port: port)),
@@ -32,7 +32,7 @@ struct UDPTests {
                                         transport: nodeTransport)
         try await node.start()
         let controllerLayer = MessageLayer(transport: UDPTransport(port: 0))
-        let commissioner = try Commissioner(layer: controllerLayer, fabricID: 7, nodeID: 0x99)
+        let commissioner = try Commissioner(layer: controllerLayer, fabricID: 7, nodeID: 0x99, trustStore: .test)
         try await commissioner.start()
         let peer = PeerAddress.socket(try SocketAddress(ipAddress: "127.0.0.1", port: try #require(nodeTransport.localPort)))
         let session = try await commissioner.commission(peer, passcode: 20202021, nodeID: 0x1234)

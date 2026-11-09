@@ -9,7 +9,9 @@ from matter.js. Copyright 2022-2026 Matter.js Authors. Licensed under the Apache
 
 ## connectedhomeip
 
-Test attestation credentials (the test PAA, the test Certification Declaration signing key) and test vectors are
+Test attestation credentials (the test PAA, the test Certification Declaration signing key), the CSA's Certification
+Declaration signing certificates (`Sources/Matter/Attestation/DeclarationSigners.swift`, from
+`DefaultDeviceAttestationVerifier.cpp`), the order of the attestation checks (`AttestationVerifier`) and test vectors are
 taken from connectedhomeip. Copyright (c) 2020-2026 Project CHIP Authors. Licensed under the Apache License, Version 2.0
 (https://www.apache.org/licenses/LICENSE-2.0).
 

@@ -292,16 +292,18 @@ public enum CASE {
 
     // MARK: - Initiator
 
-    /// Establishes a CASE session with a node of the identity's fabric.
-    public static func establish(with peer: PeerAddress, peerNodeID: NodeID, identity: Identity, layer: MessageLayer) async throws -> SessionInfo {
-        try await establishResumable(with: peer, peerNodeID: peerNodeID, identity: identity, layer: layer).session
+    /// Establishes a CASE session with a node of the identity's fabric. `peerParameters`: its record's MRP intervals.
+    public static func establish(with peer: PeerAddress, peerNodeID: NodeID, identity: Identity, layer: MessageLayer,
+                                 peerParameters: SessionParameters? = nil) async throws -> SessionInfo {
+        try await establishResumable(with: peer, peerNodeID: peerNodeID, identity: identity, layer: layer, peerParameters: peerParameters).session
     }
 
     /// Establishes a CASE session, resuming a previous one when `ticket` is given and the peer still knows it; the
     /// returned ticket resumes this one.
     public static func establishResumable(with peer: PeerAddress, peerNodeID: NodeID, identity: Identity, layer: MessageLayer,
-                                          ticket: ResumptionTicket? = nil) async throws -> (session: SessionInfo, ticket: ResumptionTicket) {
-        let exchange = await layer.newUnsecuredExchange(to: peer, protocolID: .secureChannel)
+                                          ticket: ResumptionTicket? = nil,
+                                          peerParameters: SessionParameters? = nil) async throws -> (session: SessionInfo, ticket: ResumptionTicket) {
+        let exchange = await layer.newUnsecuredExchange(to: peer, protocolID: .secureChannel, peerParameters: peerParameters)
         do {
             let result = try await initiate(exchange, peer: peer, peerNodeID: peerNodeID, identity: identity, layer: layer, ticket: ticket)
             await exchange.close()

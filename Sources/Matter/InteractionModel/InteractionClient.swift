@@ -43,19 +43,8 @@ public actor InteractionClient: ProtocolHandler {
     /// The value of one attribute, or its status as an error.
     public func read(endpoint: EndpointNumber, cluster: ClusterID, attribute: AttributeID, session: UInt16) async throws -> TLVValue {
         let (reports, _) = try await read([AttributePath(endpoint: endpoint, cluster: cluster, attribute: attribute)], session: session)
-        // A list split into appends arrives as several reports.
-        var value: TLVValue?
-        for report in reports {
-            switch report {
-            case .data(let path, _, let data):
-                if path.listIndex == .append, case .array(let entries) = value ?? .array([]) {
-                    value = .array(entries + [TLVElement(data)])
-                } else {
-                    value = data
-                }
-            case .status(_, let status): throw status
-            }
-        }
+        for report in reports { if case .status(_, let status) = report { throw status } }
+        let value = reports.values[ConcreteAttribute(endpoint, cluster, attribute)]
         guard let value else { throw StatusError(.failure) }
         return value
     }
@@ -137,14 +126,18 @@ public actor InteractionClient: ProtocolHandler {
 
     // MARK: - Subscribe
 
-    /// Subscribes; the stream yields the priming report and then each change report.
-    public func subscribe(_ attributes: [AttributePath], events: [EventPath] = [], minInterval: UInt16, maxInterval: UInt16,
-                          keepSubscriptions: Bool = true, session: UInt16) async throws -> (id: UInt32, maxInterval: UInt16, reports: AsyncStream<SubscriptionReport>) {
+    /// Subscribes; the stream yields the priming report and then each change report. `eventMin` asks only for events
+    /// numbered from it on (an EventFilterIB, Core §10.6.6): one past the last event seen, so a subscription made again
+    /// does not replay what the last one delivered.
+    public func subscribe(_ attributes: [AttributePath], events: [EventPath] = [], eventMin: UInt64? = nil, minInterval: UInt16,
+                          maxInterval: UInt16, keepSubscriptions: Bool = true,
+                          session: UInt16) async throws -> (id: UInt32, maxInterval: UInt16, reports: AsyncStream<SubscriptionReport>) {
         var fields: [TLVElement] = [
             .field(0, .bool(keepSubscriptions)), .field(1, .unsigned(UInt64(minInterval))), .field(2, .unsigned(UInt64(maxInterval))),
         ]
         if !attributes.isEmpty { fields.append(.field(3, .array(attributes.map { TLVElement($0.tlv) }))) }
         if !events.isEmpty { fields.append(.field(4, .array(events.map { TLVElement($0.tlv) }))) }
+        if let eventMin, !events.isEmpty { fields.append(.field(5, .array([TLVElement(.structure([.field(1, .unsigned(eventMin))]))]))) }
         fields += [.field(7, .bool(true)), interactionModelRevisionField]
 
         let (priming, id, negotiated) = try await interact(session: session) { exchange in
@@ -180,5 +173,24 @@ public actor InteractionClient: ProtocolHandler {
         }
         guard let report = try? await receiveReports(on: exchange, first: contents) else { return }
         continuation.yield(report)
+    }
+}
+
+extension [AttributeReport] {
+    /// The values reported, by attribute, with a list sent as appends (a null ListIndex, Core §10.6.4.3.1) put back
+    /// together; statuses are left out.
+    public var values: [ConcreteAttribute: TLVValue] {
+        var values: [ConcreteAttribute: TLVValue] = [:]
+        for report in self {
+            guard case .data(let path, _, let value) = report, let endpoint = path.endpoint, let cluster = path.cluster,
+                  let attribute = path.attribute else { continue }
+            let key = ConcreteAttribute(endpoint, cluster, attribute)
+            if path.listIndex == .append {
+                values[key] = .array((values[key]?.elements ?? []) + [TLVElement(value)])
+            } else {
+                values[key] = value
+            }
+        }
+        return values
     }
 }

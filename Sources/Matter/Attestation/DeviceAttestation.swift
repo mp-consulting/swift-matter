@@ -63,6 +63,11 @@ public struct CertificationDeclaration: Hashable, Sendable {
     public var versionNumber: UInt16
     /// 0: development and test, 1: provisional, 2: official.
     public var certificationType: UInt8
+    /// The vendor and product of the DAC when another vendor's PAI issued it (both or neither), and the PAAs allowed to
+    /// root the device's chain, by subject key identifier (Core §6.3.1).
+    public var dacOriginVendorID: UInt16?
+    public var dacOriginProductID: UInt16?
+    public var authorizedPAAs: [[UInt8]]?
 
     public init(vendorID: UInt16, productIDs: [UInt16], deviceType: UInt32, certificateID: String, versionNumber: UInt16,
                 certificationType: UInt8) {
@@ -76,13 +81,22 @@ public struct CertificationDeclaration: Hashable, Sendable {
 
     /// cd_content: the certification elements TLV.
     public var content: [UInt8] {
-        TLVEncoder.encode(.structure([
+        // Built a field at a time: one expression of it takes the compiler too long to type-check (Linux CI).
+        let productList: [TLVElement] = productIDs.map { TLVElement(.unsigned(UInt64($0))) }
+        var fields: [TLVElement] = [
             .field(0, .unsigned(1)), .field(1, .unsigned(UInt64(vendorID))),
-            .field(2, .array(productIDs.map { TLVElement(.unsigned(UInt64($0))) })), .field(3, .unsigned(UInt64(deviceType))),
+            .field(2, .array(productList)), .field(3, .unsigned(UInt64(deviceType))),
             .field(4, .utf8(certificateID)), .field(5, .unsigned(UInt64(securityLevel))),
             .field(6, .unsigned(UInt64(securityInformation))), .field(7, .unsigned(UInt64(versionNumber))),
             .field(8, .unsigned(UInt64(certificationType))),
-        ]))
+        ]
+        if let vendor = dacOriginVendorID { fields.append(.field(9, .unsigned(UInt64(vendor)))) }
+        if let product = dacOriginProductID { fields.append(.field(10, .unsigned(UInt64(product)))) }
+        if let paas = authorizedPAAs {
+            let keyIDs: [TLVElement] = paas.map { TLVElement(.bytes($0)) }
+            fields.append(.field(11, .array(keyIDs)))
+        }
+        return TLVEncoder.encode(.structure(fields))
     }
 
     /// The CMS SignedData (ContentInfo) as connectedhomeip encodes it (Core Appendix F.1).
@@ -100,6 +114,14 @@ public struct CertificationDeclaration: Hashable, Sendable {
             .set([signerInfo]),
         ])
         return DER.sequence([.objectIdentifier(OID.signedData), .contextConstructed(0, [signedData])]).encoded
+    }
+
+    /// The key identifier its SignerInfo names (subjectKeyIdentifier, Core Appendix F.1): which signing key to check it with.
+    public static func signerKeyID(_ cms: [UInt8]) throws -> [UInt8] {
+        guard case .contextPrimitive(0, let keyID)? = try DER.parse(cms)[1]?[0]?[3]?[0]?[1] else {
+            throw AttestationError.malformedDeclaration
+        }
+        return keyID
     }
 
     /// The content and signature of a CMS-encoded declaration, after checking its signature with `key`.
@@ -147,7 +169,7 @@ enum X509 {
         if let pathLength { constraints.append(.integer([pathLength])) }
         let usage = isCA ? MatterCertificate.namedBits(MatterCertificate.KeyUsage([.keyCertSign, .crlSign]).rawValue)
             : MatterCertificate.namedBits(MatterCertificate.KeyUsage.digitalSignature.rawValue)
-        let notBefore = MatterCertificate.time(MatterCertificate.matterSeconds(Date().addingTimeInterval(-86_400)), isNotAfter: false)
+        let notBefore = MatterCertificate.time(MatterCertificate.matterSeconds(Date().addingTimeInterval(-86_400)))
         let tbs = DER.sequence([
             .contextConstructed(0, [.integer([2])]),
             .integer(MatterCrypto.random(8).enumerated().map { $0.offset == 0 ? $0.element & 0x7F : $0.element }),
@@ -173,27 +195,103 @@ enum X509 {
         var publicKey: P256.Signing.PublicKey
         var vendorID: UInt16?
         var productID: UInt16?
+        var notBefore: Date
+        var notAfter: Date
+        /// Basic constraints: whether it is a CA (nil without the extension), and its path length.
+        var isCA: Bool?
+        var pathLength: Int?
+        var subjectKeyID: [UInt8]?
+        var authorityKeyID: [UInt8]?
+
+        func isValid(at date: Date) -> Bool { notBefore <= date && date <= notAfter }
     }
 
     static func parse(_ der: [UInt8]) throws -> Parsed {
         var reader = DER.Reader(bytes: der)
+        // TBSCertificate (RFC 5280 §4.1): version [0], serial, signature, issuer, validity, subject, key, extensions [3].
         guard case .sequence(let parts) = try reader.next(depth: 0), parts.count == 3,
               case .bitString(let signatureBytes, _) = parts[2],
-              case .sequence(let tbsFields) = parts[0],
-              let subject = tbsFields.dropFirst(5).first, case .sequence(let keyInfo)? = tbsFields.dropFirst(6).first,
-              keyInfo.count == 2, case .bitString(let keyBytes, _) = keyInfo[1]
+              case .sequence(let tbsFields) = parts[0], tbsFields.count >= 7,
+              case .contextConstructed(0, _) = tbsFields[0],
+              case .sequence(let validity) = tbsFields[4], validity.count == 2,
+              let notBefore = time(validity[0]), let notAfter = time(validity[1]),
+              case .sequence(let keyInfo) = tbsFields[6], keyInfo.count == 2, case .bitString(let keyBytes, _) = keyInfo[1]
         else { throw AttestationError.malformedCertificate }
-        func attribute(_ oid: DER.ObjectIdentifier) -> UInt16? {
-            for rdn in subject.members ?? [] {
-                for pair in rdn.members ?? [] where pair[0]?.objectIdentifier == oid {
-                    return pair[1]?.stringValue.flatMap { UInt16($0, radix: 16) }
+        let ids = try identifiers(tbsFields[5])
+        var parsed = Parsed(tbs: parts[0].encoded, signature: try P256.Signing.ECDSASignature(derRepresentation: signatureBytes),
+                            publicKey: try P256.Signing.PublicKey(x963Representation: keyBytes), vendorID: ids.vendorID,
+                            productID: ids.productID, notBefore: notBefore, notAfter: notAfter)
+        for case .contextConstructed(3, let wrapped) in tbsFields.dropFirst(7) {
+            for item in wrapped.first?.members ?? [] {
+                guard let oid = item[0]?.objectIdentifier, let value = item.members?.last?.octetStringBytes,
+                      let inner = try? DER.parse(value) else { throw AttestationError.malformedCertificate }
+                switch oid {
+                case OID.basicConstraints:
+                    parsed.isCA = false
+                    for member in inner.members ?? [] {
+                        if case .boolean(let ca) = member { parsed.isCA = ca }
+                        if case .integer(let length) = member, length.count == 1 { parsed.pathLength = Int(length[0]) }
+                    }
+                case OID.subjectKeyIdentifier: parsed.subjectKeyID = inner.octetStringBytes
+                case OID.authorityKeyIdentifier:
+                    if case .contextPrimitive(0, let id)? = inner[0] { parsed.authorityKeyID = id }
+                default: break
                 }
             }
-            return nil
         }
-        return Parsed(tbs: parts[0].encoded, signature: try P256.Signing.ECDSASignature(derRepresentation: signatureBytes),
-                      publicKey: try P256.Signing.PublicKey(x963Representation: keyBytes),
-                      vendorID: attribute(OID.matterVendorID), productID: attribute(OID.matterProductID))
+        return parsed
+    }
+
+    /// A subject's vendor and product ids (Core §6.2.2.2): Matter's attributes, each exactly four uppercase hexadecimal
+    /// digits (§6.1.1), or else `Mvid:XXXX` and `Mpid:XXXX` in the common name, the leftmost well-formed one counting.
+    /// A prefix with no well-formed value, or both methods for one id, is a malformed certificate.
+    static func identifiers(_ subject: DER) throws -> (vendorID: UInt16?, productID: UInt16?) {
+        func hex4(_ text: Substring) -> UInt16? {
+            guard text.count == 4, text.allSatisfy({ $0.isHexDigit && !$0.isLowercase }) else { return nil }
+            return UInt16(text, radix: 16)
+        }
+        var attributes: [DER.ObjectIdentifier: String] = [:]
+        for rdn in subject.members ?? [] {
+            for pair in rdn.members ?? [] {
+                if let oid = pair[0]?.objectIdentifier, let value = pair[1]?.stringValue { attributes[oid] = value }
+            }
+        }
+        func id(_ oid: DER.ObjectIdentifier, prefix: String) throws -> UInt16? {
+            let fallback: UInt16?
+            if let commonName = attributes[OID.commonName], commonName.contains(prefix) {
+                let candidates = commonName.ranges(of: prefix).map { commonName[$0.upperBound...].prefix(4) }
+                guard let first = candidates.lazy.compactMap(hex4).first else { throw AttestationError.malformedCertificate }
+                fallback = first
+            } else {
+                fallback = nil
+            }
+            guard let value = attributes[oid] else { return fallback }
+            guard fallback == nil, let preferred = hex4(Substring(value)) else { throw AttestationError.malformedCertificate }
+            return preferred
+        }
+        return (try id(OID.matterVendorID, prefix: "Mvid:"), try id(OID.matterProductID, prefix: "Mpid:"))
+    }
+
+    /// A UTCTime (years 1950-2049) or GeneralizedTime, in UTC (RFC 5280 §4.1.2.5).
+    static func time(_ value: DER) -> Date? {
+        let text: String, digits: Int
+        switch value {
+        case .utcTime(let string): (text, digits) = (string, 2)
+        case .generalizedTime(let string): (text, digits) = (string, 4)
+        default: return nil
+        }
+        let body = text.dropLast()
+        guard text.count == digits + 11, text.hasSuffix("Z"), body.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        let n = body.compactMap(\.wholeNumberValue)
+        func number(_ from: Int, _ count: Int) -> Int { n[from..<(from + count)].reduce(0) { $0 * 10 + $1 } }
+        var year = number(0, digits)
+        if digits == 2 { year += year < 50 ? 2000 : 1900 }
+        var components = DateComponents(timeZone: TimeZone(identifier: "UTC"), year: year, month: number(digits, 2),
+                                         day: number(digits + 2, 2), hour: number(digits + 4, 2), minute: number(digits + 6, 2),
+                                         second: number(digits + 8, 2))
+        components.calendar = Calendar(identifier: .gregorian)
+        guard components.isValidDate, let date = components.date else { return nil }
+        return date
     }
 
     /// Whether `certificate` was signed by `issuer`'s key.

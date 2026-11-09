@@ -56,7 +56,8 @@ struct MatterRecords: Sendable {
         for advertisement in operational {
             let service = Self.operationalService
             let fabric = hexString(advertisement.compressedFabricID)
-            let instance = DNSName(["\(fabric)-\(zeroPadded(advertisement.nodeID, width: 16, radix: 16))"] + service.labels)
+            let instance = DNSName([OperationalInstanceName.make(compressedFabricID: advertisement.compressedFabricID,
+                                                                 nodeID: advertisement.nodeID)] + service.labels)
             records.append(DNSRecord(name: service, data: .ptr(instance), ttl: Self.ttl))
             records.append(DNSRecord(name: Self.subtype("_I\(fabric)", of: service), data: .ptr(instance), ttl: Self.ttl))
             records.append(DNSRecord(name: instance, data: .srv(priority: 0, weight: 0, port: UInt16(advertisement.port), target: host),

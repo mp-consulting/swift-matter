@@ -34,13 +34,14 @@ struct CommissioningFixture {
     let commissioner: Commissioner
     static let passcode: UInt32 = 20202021
 
-    init(failSafeScale: Double = 0.01) async throws {
+    init(failSafeScale: Double = 0.01, trustStore: AttestationTrustStore = .test,
+         attestationPolicy: Commissioner.AttestationPolicy = .verify) async throws {
         var configuration = NodeConfiguration(passcode: Self.passcode, discriminator: 3840)
         configuration.reliability = .fast
         node = try await MatterNode(configuration: configuration, storage: storage, transport: await network.transport(named: "node"))
         try await node.start()
         let layer = MessageLayer(transport: await network.transport(named: "commissioner"), reliability: .fast)
-        commissioner = try Commissioner(layer: layer, fabricID: 0xFAB, nodeID: 0x1122)
+        commissioner = try Commissioner(layer: layer, fabricID: 0xFAB, nodeID: 0x1122, trustStore: trustStore, attestationPolicy: attestationPolicy)
         try await commissioner.start()
     }
 }
@@ -160,7 +161,7 @@ struct CommissioningTests {
         #expect(await fixture.node.commissioning.windowStatus == .enhanced)
 
         let layer = MessageLayer(transport: await fixture.network.transport(named: "second"), reliability: .fast)
-        let second = try Commissioner(layer: layer, fabricID: 0xBEEF, nodeID: 0x3344)
+        let second = try Commissioner(layer: layer, fabricID: 0xBEEF, nodeID: 0x3344, trustStore: .test)
         try await second.start()
         _ = try await second.commission(.memory("node"), passcode: 11223344, nodeID: 0x77)
         #expect(await fixture.node.fabrics.all.map(\.fabricID) == [0xFAB, 0xBEEF])
@@ -187,7 +188,7 @@ struct CommissioningTests {
             }
         }
         let other = try Commissioner(layer: MessageLayer(transport: await fixture.network.transport(named: "other"), reliability: .fast),
-                                     fabricID: 0xBEEF, nodeID: 0x3344)
+                                     fabricID: 0xBEEF, nodeID: 0x3344, trustStore: .test)
 
         #expect(try await invoke(general.id, general.Command.armFailSafe, [.field(0, .unsigned(60)), .field(1, .unsigned(2))])?[0]?.uint == 0)
         let csr = try #require(try await invoke(credentials.id, credentials.Command.csrRequest, [.field(0, .bytes(MatterCrypto.random(32)))]))

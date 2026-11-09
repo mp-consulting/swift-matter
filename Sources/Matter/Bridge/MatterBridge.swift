@@ -381,7 +381,7 @@ public actor BridgedDevice {
         }
     }
 
-    /// Reports a button press as the Switch cluster's events (Application Clusters §1.13.7).
+    /// Reports a button press as the Switch cluster's events (Application Clusters §1.13.6, in the sequences of §1.13.7-§1.13.8).
     public func press(_ press: ButtonPress, part: Int = 0) async {
         guard let cluster = cluster(SwitchCluster.id, part: part) else { return }
         typealias E = SwitchCluster.Event
@@ -397,7 +397,7 @@ public actor BridgedDevice {
             await cluster.emit(E.shortRelease, data: position)
             await cluster.emit(E.multiPressComplete, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(1))]))
         case .double:
-            // The second press starts again, then counts as the second of a multi-press (§1.13.7).
+            // The second press starts again, then counts as the second of a multi-press (§1.13.8).
             await cluster.emit(E.shortRelease, data: position)
             await cluster.emit(E.initialPress, data: position)
             await cluster.emit(E.multiPressOngoing, data: .structure([.field(0, .unsigned(1)), .field(1, .unsigned(2))]))

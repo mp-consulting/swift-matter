@@ -484,7 +484,7 @@ public actor InteractionServer: ProtocolHandler {
         let ceiling = try fields.uint(2, as: UInt16.self)
         guard floor <= ceiling else { throw StatusError(.invalidAction) }
         if try !fields.bool(0) {
-            // KeepSubscriptions false: the subscriber's earlier subscriptions end (Core §8.5.3.1).
+            // KeepSubscriptions false: the subscriber's earlier subscriptions end (Core §8.5.2.3).
             for (id, existing) in subscriptions where existing.isFrom(session) { await cancelSubscription(id) }
         }
         let fabricCount = subscriptions.values.filter { $0.session.fabricIndex == session.fabricIndex }.count
