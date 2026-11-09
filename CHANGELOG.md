@@ -6,6 +6,8 @@ Before 1.0, a minor version may change the API.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-09
+
 ### Added
 
 - A changelog, contribution guide, security policy, code of conduct, issue and pull request templates, and Dependabot
@@ -156,7 +158,8 @@ The first release: a Matter node over IP and a bridge API.
   device kinds; endpoint numbers kept across restarts.
 - `matter-bridge-demo`, a bridge of virtual devices, and `matter-bench`, which measures a node.
 
-[Unreleased]: https://github.com/mp-consulting/swift-matter/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/mp-consulting/swift-matter/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/mp-consulting/swift-matter/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/mp-consulting/swift-matter/compare/0.4.1...0.5.0
 [0.4.1]: https://github.com/mp-consulting/swift-matter/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/mp-consulting/swift-matter/compare/0.3.0...0.4.0
