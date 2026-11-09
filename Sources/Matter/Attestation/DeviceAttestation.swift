@@ -81,15 +81,22 @@ public struct CertificationDeclaration: Hashable, Sendable {
 
     /// cd_content: the certification elements TLV.
     public var content: [UInt8] {
-        TLVEncoder.encode(.structure([
+        // Built a field at a time: one expression of it takes the compiler too long to type-check (Linux CI).
+        let productList: [TLVElement] = productIDs.map { TLVElement(.unsigned(UInt64($0))) }
+        var fields: [TLVElement] = [
             .field(0, .unsigned(1)), .field(1, .unsigned(UInt64(vendorID))),
-            .field(2, .array(productIDs.map { TLVElement(.unsigned(UInt64($0))) })), .field(3, .unsigned(UInt64(deviceType))),
+            .field(2, .array(productList)), .field(3, .unsigned(UInt64(deviceType))),
             .field(4, .utf8(certificateID)), .field(5, .unsigned(UInt64(securityLevel))),
             .field(6, .unsigned(UInt64(securityInformation))), .field(7, .unsigned(UInt64(versionNumber))),
             .field(8, .unsigned(UInt64(certificationType))),
-        ] + (dacOriginVendorID.map { [.field(9, .unsigned(UInt64($0)))] } ?? [])
-          + (dacOriginProductID.map { [.field(10, .unsigned(UInt64($0)))] } ?? [])
-          + (authorizedPAAs.map { [.field(11, .array($0.map { TLVElement(.bytes($0)) }))] } ?? [])))
+        ]
+        if let vendor = dacOriginVendorID { fields.append(.field(9, .unsigned(UInt64(vendor)))) }
+        if let product = dacOriginProductID { fields.append(.field(10, .unsigned(UInt64(product)))) }
+        if let paas = authorizedPAAs {
+            let keyIDs: [TLVElement] = paas.map { TLVElement(.bytes($0)) }
+            fields.append(.field(11, .array(keyIDs)))
+        }
+        return TLVEncoder.encode(.structure(fields))
     }
 
     /// The CMS SignedData (ContentInfo) as connectedhomeip encodes it (Core Appendix F.1).
