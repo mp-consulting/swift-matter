@@ -16,7 +16,7 @@ struct TCPTests {
 
         let client = TCPTransport(port: nil)
         let controllerLayer = MessageLayer(transport: client, reliability: .fast)
-        let commissioner = try Commissioner(layer: controllerLayer, fabricID: 7, nodeID: 0x99)
+        let commissioner = try Commissioner(layer: controllerLayer, fabricID: 7, nodeID: 0x99, trustStore: .test)
         try await commissioner.start()
         let peer = try await client.connect(to: try SocketAddress(ipAddress: "127.0.0.1", port: port))
         let session = try await commissioner.commission(peer, passcode: 20202021, nodeID: 0x1234)

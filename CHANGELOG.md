@@ -17,6 +17,45 @@ Before 1.0, a minor version may change the API.
   leaves the group.
 - Extended color lights support enhanced hue (EnhancedMoveToHue, EnhancedMoveToHueAndSaturation), so a scene keeps
   their hue.
+- Device attestation as a commissioner validates it (Core §6.2.3.1), without connectedhomeip: `AttestationVerifier`
+  checks the DAC, PAI and PAA chain (each valid when the DAC was issued, vendor and product ids in either of the
+  encodings of §6.2.2.2), the attestation signature and nonce, and the Certification Declaration (its signer, vendor,
+  products, DAC origin and authorized PAAs). `AttestationTrustStore.registry` holds the 74 PAA certificates the
+  Distributed Compliance Ledger approved and the CSA's five declaration signing keys; `Scripts/update-trust-store.py`
+  (`bin/dev trust-store`) fetches the roots from the ledger again. `.test` is connectedhomeip's test PKI. Revocation
+  (§6.2.4) is not checked yet.
+- The controller side for production devices: `Commissioner(trustStore:)`, the registry's by default;
+  `attestationPolicy` `.signaturesOnly` takes a device whose certification did not check out once the person agreed
+  (`AttestationFailure.isCertificationFailure`), its DAC's signatures still checked; `commissionNode` says whose it is;
+  `attestationInformation(session:)` asks a node for its attestation over PASE or CASE; `Commissioner.Snapshot` saves a fabric's keys and certificates and
+  `Commissioner(layer:snapshot:)` restores it; `compressedFabricID`. Commissioning reads the device's LocationCapability
+  before SetRegulatoryConfig, so an indoor-only device is not refused.
+- `InteractionClient.subscribe(eventMin:)`: a subscription from an event number (an EventFilterIB), so one made again
+  does not replay what the last one delivered.
+- DNS-SD records for a commissioner: `CommissionableNodeInfo` (a `_matterc._udp` TXT record: discriminator,
+  commissioning mode, vendor and product, MRP intervals), `PairingCode` (a manual code or a QR code, matched to a
+  record) and `OperationalInstanceName` (`<compressed fabric id>-<node id>`). `SessionParameters(txt:)` reads SII, SAI,
+  SAT and T; `MessageLayer.setParameters(_:of:)` gives a peer's to the unsecured messages that establish a session.
+- Commissioning sets the fabric's label (`commissionNode(fabricLabel:)`, UpdateFabricLabel, the next free one on a
+  LabelConflict), as a commissioner SHALL (Core §5.5, step 13). `CommissionableNodeInfo.isCommissionable` is CM 1 or 2:
+  CM 3 is Joint Fabric commissioning, which needs steps of its own.
+- `matter-probe`: joins a real device as an extra administrator through a window another controller opened, and prints
+  what it is and every event it sends (`commission`, `watch`, `forget`, and `attest`, which checks a commissioned
+  device's attestation against the registry over CASE).
+- A commissioning that stops after ArmFailSafe (a refused attestation, a failed command) expires the fail-safe at once,
+  so the device takes a new PASE session in the same window rather than answering BusyWithOtherAdmin.
+
+### Fixed
+
+- A DNS-SD TXT value beyond its bound (SII or SAI above an hour, SAT above 65535 ms) is invalid and means the default,
+  as Core §4.3.4 says, rather than being clamped.
+- Spec citations: KeepSubscriptions is Core §8.5.2.3, the Switch cluster's events Application Clusters §1.13.6.
+- MRP retransmits from the peer's idle interval once it has been quiet for its active threshold, and from its active
+  interval while it is active (Core §4.12.8); it always used the active one, which a sleepy device polling every idle
+  interval could miss.
+- A certificate time of 0 is 99991231235959Z in X.509 for notBefore as for notAfter, as connectedhomeip encodes it, so a
+  signature over the X.509 form verifies on both sides. The commissioner's own certificates start a day ago: a device on
+  connectedhomeip refused its root certificate (AddTrustedRootCertificate, InvalidCommand) when it started at 0.
 
 ### Changed
 

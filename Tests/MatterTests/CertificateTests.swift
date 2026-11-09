@@ -45,6 +45,26 @@ struct CertificateTests {
         #expect(try noc.x509 == Array(der))
     }
 
+    /// A start time of 0 is "no well-defined time" in X.509 (99991231235959Z) as connectedhomeip encodes it, notBefore
+    /// as notAfter: a device on its SDK checks a commissioner's signature over that form. The DER is connectedhomeip's
+    /// own conversion of the TLV (pychip_ConvertChipCertToX509Cert, home-assistant-chip-core 2025.7.0).
+    @Test func encodesAZeroTimeAsConnectedhomeipDoes() throws {
+        let tlv = hex(String("""
+            1530010101240201370325142211182404002405003706251422111824070124080130094104b51184b756537f01aa451a66a6165ed0
+            3750aa2bcafa593b2c880d8b05b42b7a582088dfa4a23bcfd098fa447951dea6c756e13a447fcd387b0f9eea79974397370a350129011824
+            0260300414c29b97131ecbea5f9b1e8065028c5f82c3d2b3ef300514c29b97131ecbea5f9b1e8065028c5f82c3d2b3ef18300b40041d3167
+            b99240139148bd7239fc3063edda1266228cec584d317148160ec9f747fdd0fa615e9cc0572e4c8d7161829eb762ff795b3f998fda1611c6
+            85e2978d18
+            """.filter(\.isHexDigit)))
+        let der = Data(base64Encoded: String("""
+            MIIBmTCCAUCgAwIBAgIBATAKBggqhkjOPQQDAjAiMSAwHgYKKwYBBAGConwBBAwQMDAwMDAwMDAwMDAwMTEyMjAiGA85OTk5MTIzMTIzNTk1OVoY            Dzk5OTkxMjMxMjM1OTU5WjAiMSAwHgYKKwYBBAGConwBBAwQMDAwMDAwMDAwMDAwMTEyMjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLURhLdW            U38BqkUaZqYWXtA3UKoryvpZOyyIDYsFtCt6WCCI36SiO8/QmPpEeVHepsdW4TpEf804ew+e6nmXQ5ejYzBhMA8GA1UdEwEB/wQFMAMBAf8wDgYD            VR0PAQH/BAQDAgEGMB0GA1UdDgQWBBTCm5cTHsvqX5segGUCjF+Cw9Kz7zAfBgNVHSMEGDAWgBTCm5cTHsvqX5segGUCjF+Cw9Kz7zAKBggqhkjO            PQQDAgNHADBEAiAEHTFnuZJAE5FIvXI5/DBj7doSZiKM7FhNMXFIFg7J9wIgR/3Q+mFenMBXLkyNcWGCnrdi/3lbP5mP2hYRxoXil40=
+            """.filter { !$0.isWhitespace && $0 != "\\" }))!
+        let root = try MatterCertificate(tlv: tlv)
+        #expect(root.notBefore == 0)
+        #expect(try root.x509 == Array(der))
+        #expect(root.isSigned(by: root))
+    }
+
     @Test func signsAndVerifiesAChain() throws {
         let rootKey = P256.Signing.PrivateKey(), nodeKey = P256.Signing.PrivateKey()
         let rootPublic = Array(rootKey.publicKey.x963Representation)
@@ -79,9 +99,9 @@ struct CertificateTests {
     }
 
     @Test func encodesTimes() {
-        #expect(MatterCertificate.time(0x271B17EF, isNotAfter: false) == .utcTime("201015142343Z"))
-        #expect(MatterCertificate.time(0, isNotAfter: true) == .generalizedTime("99991231235959Z"))
-        #expect(MatterCertificate.time(UInt32.max, isNotAfter: true) == .generalizedTime("21360207062815Z"))
+        #expect(MatterCertificate.time(0x271B17EF) == .utcTime("201015142343Z"))
+        #expect(MatterCertificate.time(0) == .generalizedTime("99991231235959Z"))
+        #expect(MatterCertificate.time(UInt32.max) == .generalizedTime("21360207062815Z"))
     }
 
     @Test func encodesObjectIdentifiers() throws {

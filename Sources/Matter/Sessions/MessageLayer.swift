@@ -74,6 +74,10 @@ public actor MessageLayer {
 
     struct UnsecuredSession {
         var reception = MessageReceptionState(policy: .rolling)
+        /// When the peer last sent a message on it (Core §4.12.8): nil until it answers.
+        var lastReceived: ContinuousClock.Instant?
+        /// The peer's MRP intervals as its DNS-SD record gave them (Core §4.3.4), for an initiator; defaults otherwise.
+        var peerParameters: SessionParameters?
         /// The node id this node uses toward the peer (an initiator's ephemeral id).
         let localNodeID: UInt64
     }
@@ -196,12 +200,16 @@ public actor MessageLayer {
                             info: session.info, protocolID: protocolID)
     }
 
-    /// Starts an exchange over an unsecured session toward a peer (session establishment as initiator).
-    public func newUnsecuredExchange(to peer: PeerAddress, protocolID: ProtocolID) -> Exchange {
+    /// Starts an exchange over an unsecured session toward a peer (session establishment as initiator). `peerParameters`
+    /// are the MRP intervals the peer's DNS-SD record gives (`SessionParameters(txt:)`): a sleepy device polls for its
+    /// messages only every idle interval.
+    public func newUnsecuredExchange(to peer: PeerAddress, protocolID: ProtocolID, peerParameters: SessionParameters? = nil) -> Exchange {
         // The initiator's ephemeral node id is random (Core §4.13.2.1); the peer replies to it.
         let localNodeID = UInt64.random(in: 1...0xFFFF_FFEF_FFFF_FFFF)
         let key = UnsecuredKey(peer: peer, peerNodeID: localNodeID)
-        unsecuredSessions[key] = UnsecuredSession(localNodeID: localNodeID)
+        var session = UnsecuredSession(localNodeID: localNodeID)
+        session.peerParameters = peerParameters
+        unsecuredSessions[key] = session
         return makeExchange(key: ExchangeKey(session: .unsecured(key), exchangeID: allocateExchangeID(), isInitiator: true),
                             info: unsecuredInfo(peer), protocolID: protocolID)
     }
@@ -283,10 +291,15 @@ public actor MessageLayer {
         }
     }
 
+    /// The interval MRP retransmits from (Core §4.12.8): the peer's active interval while it is active, else its idle
+    /// one. An unsecured peer's parameters are what its DNS-SD record said (`newUnsecuredExchange(to:protocolID:peerParameters:)`),
+    /// else the defaults.
     private func retryInterval(for session: SessionRef) -> Duration {
         switch session {
-        case .secure(let id): secureSessions[id]?.peerParameters.activeInterval ?? parameters.activeInterval
-        case .unsecured: SessionParameters.default.activeInterval
+        case .secure(let id):
+            secureSessions[id]?.retryInterval() ?? parameters.activeInterval
+        case .unsecured(let key):
+            (unsecuredSessions[key]?.peerParameters ?? .default).retryInterval(lastHeard: unsecuredSessions[key]?.lastReceived)
         }
     }
 
@@ -407,6 +420,7 @@ public actor MessageLayer {
                     unsecuredSessions[key] = UnsecuredSession(localNodeID: 0)
                 }
                 isDuplicate = !unsecuredSessions[key]!.reception.accept(header.counter)
+                if !isDuplicate { unsecuredSessions[key]!.lastReceived = .now }
                 session = .unsecured(key)
             } else {
                 guard var secure = secureSessions[header.sessionID] else { throw MessageError.unknownSession(header.sessionID) }
@@ -414,7 +428,10 @@ public actor MessageLayer {
                                            nonceSourceNodeID: secure.peerNonceNodeID)
                 isDuplicate = !secure.reception.accept(header.counter)
                 // The peer may have moved; replies follow its latest authenticated address (Core §4.13.2.2).
-                if !isDuplicate { secure.info.peerAddress = peer }
+                if !isDuplicate {
+                    secure.info.peerAddress = peer
+                    secure.lastReceived = .now
+                }
                 secureSessions[header.sessionID] = secure
                 session = .secure(header.sessionID)
             }

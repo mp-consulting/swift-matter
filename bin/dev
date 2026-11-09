@@ -23,6 +23,7 @@ Usage: bin/dev <command> [arguments]
   interop [args]        Commission the running demo with chip-tool and drive its devices (Scripts/interop.sh)
   interop-python        Run the demo and commission it with connectedhomeip's Python controller, in its own venv (Scripts/interop.py)
   generate CHECKOUT     Regenerate Sources/Matter/DataModel/Definitions.swift from a matter.js checkout
+  trust-store           Fetch the PAA roots the Distributed Compliance Ledger approved into RegistryPAAs.swift
   lint                  Check for trailing whitespace, tabs and stray debugging prints
   clean                 Remove the build directory
   resolve               Resolve and update the package's dependencies
@@ -70,11 +71,15 @@ case "$command" in
         [[ $# -eq 1 ]] || { echo "Usage: bin/dev generate <matter.js checkout>" >&2; exit 1; }
         node Scripts/generate-clusters.mjs "$1" > Sources/Matter/DataModel/Definitions.swift
         ;;
+    trust-store)
+        out=Sources/Matter/Attestation/RegistryPAAs.swift
+        python3 -I Scripts/update-trust-store.py > "$out.new" && mv "$out.new" "$out" || { rm -f "$out.new"; exit 1; }
+        ;;
     lint)
         status=0
         if grep -rnE '[[:space:]]+$' Sources Tests Package.swift; then echo "Trailing whitespace above"; status=1; fi
         if grep -rn $'\t' Sources Tests Package.swift; then echo "Tabs above"; status=1; fi
-        if grep -rnE '^\s*(print|debugPrint|dump)\(' Sources --include='*.swift' | grep -vE 'Sources/(MatterBridgeDemo|MatterBench)'; then
+        if grep -rnE '^\s*(print|debugPrint|dump)\(' Sources --include='*.swift' | grep -vE 'Sources/(MatterBridgeDemo|MatterBench|MatterProbe)'; then
             echo "Debugging prints above (log through swift-log instead)"; status=1
         fi
         exit $status

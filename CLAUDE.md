@@ -23,16 +23,17 @@ Clusters `23-27350-011`, Device Library `23-27351-011`; docs/specifications.md, 
 | `Sources/Matter/DataModel` | `Definitions.swift` (generated: every cluster's ids, access, struct field tags, device types), `Model.swift` (privileges, IM status), `ClusterHandler` and `AttributeCluster` (stored attributes, command closures, write hooks, events), `FabricScopedList`, `DataModel` (endpoints, Descriptors, events, change stream), `AccessControlEntry` and `AccessControlEntries` (the persisted ACL) |
 | `Sources/Matter/InteractionModel` | `InteractionServer` (read, write, invoke, timed, subscribe; chunking), `Subscription`, `InteractionClient`, paths and report IBs |
 | `Sources/Matter/Fabrics` | `MatterStorage` (`MemoryStorage`, `FileStorage`), `StorageKey`, `Fabric` (compressed fabric id, IPK, destination id), `FabricTable`, `CertificateChain` |
-| `Sources/Matter/Attestation` | `DeviceAttestation` (DAC/PAI issued under connectedhomeip's test PAA), `CertificationDeclaration` (CMS), `X509`, `CertificationRequest` (PKCS#10), `TestCredentials` |
+| `Sources/Matter/Attestation` | `DeviceAttestation` (DAC/PAI issued under connectedhomeip's test PAA), `CertificationDeclaration` (CMS), `X509`, `CertificationRequest` (PKCS#10), `TestCredentials`; `AttestationVerifier` (Core §6.2.3.1, a commissioner's checks), `AttestationTrustStore` (`.registry`: `RegistryPAAs.swift`, generated from the Distributed Compliance Ledger by `Scripts/update-trust-store.py`, and the CSA's declaration keys in `DeclarationSigners.swift`; `.test`) |
 | `Sources/Matter/Commissioning` | `Commissioning` (window, fail-safe, pending credentials, AddNOC/UpdateNOC, fabric removal), `RootClusters` (Basic Information, General Commissioning, Operational Credentials, Access Control, Group Key Management, Network Commissioning, General Diagnostics, Administrator Commissioning) |
-| `Sources/Matter/Commissioner` | `Commissioner`: a controller with its own fabric that verifies attestation, issues NOCs and completes commissioning (tests, tools) |
-| `Sources/Matter/Discovery` | `MDNSAdvertiser` (built-in mDNS responder on IPv4 and IPv6: `_matterc._udp` with subtypes, `_matter._tcp`), `MatterRecords`, `DNSMessage` (from homeswift) |
+| `Sources/Matter/Commissioner` | `Commissioner`: a controller with its own fabric that verifies attestation (or only the device's signatures, `.signaturesOnly`), issues NOCs and completes commissioning; `Snapshot` saves and restores its fabric (tests, tools, Homeswift's Matter Devices) |
+| `Sources/Matter/Discovery` | `MDNSAdvertiser` (built-in mDNS responder on IPv4 and IPv6: `_matterc._udp` with subtypes, `_matter._tcp`), `MatterRecords`, `DNSMessage` (from homeswift); `DiscoveredNodes` (a commissioner's side: `CommissionableNodeInfo`, `PairingCode`, `OperationalInstanceName`) |
 | `Sources/Matter/Node` | `MatterNode`: storage, attestation, setup code, root endpoint, servers, advertising; `NodeConfiguration`, `NodeAdvertiser` |
 | `Sources/Matter/Bridge` | `MatterBridge` (Aggregator, persisted endpoint numbers, compound devices), `DeviceKind` presets and custom kinds, `DevicePart`, `BridgedDevice` (`update`, `set`, `emit`, `press`), `DeviceClusters` (application clusters), `Scenes` (the scene table, persisted) and `SceneEndpoint` (an endpoint's scene attributes, recalled through its clusters' commands), `DeviceCommand`/`DeviceState` |
 | `Sources/MatterBridgeDemo` | `matter-bridge-demo`: virtual lights, plug, thermometer and door |
 | `Scripts/generate-clusters.mjs` | Generates `Definitions.swift` from matter.js's model files (read as text, never executed) |
 | `Scripts/interop.sh` | Commissions the running demo with chip-tool and drives it |
 | `Scripts/interop.py` | A demo it starts commissioned by connectedhomeip's Python controller (`bin/dev interop-python`, CI's interop job): commissioning, reads, wildcard reads, invokes, a subscription, the fabric list |
+| `Sources/MatterProbe` | `matter-probe`: joins a real device as an extra administrator (a window another controller opened) and prints what it is and its events; `attest` checks its attestation against the registry over CASE; `forget` removes its fabric |
 | `Sources/MatterBench` | `matter-bench` (`bin/dev bench`): a bridge node and a controller over UDP loopback, timing commissioning, sessions, reads, invokes and reports, and memory; results in `Benchmarks.md` |
 | `Tests/MatterTests` | Swift Testing suites; vectors from the specification, the SPAKE2+ draft, RFC 3610/7914 and matter.js's tests; end-to-end commissioning on a memory network and over UDP |
 | `bin/dev` | Development commands (`bin/dev help`) |
@@ -51,6 +52,7 @@ bin/dev bench                 # matter-bench in release; update Benchmarks.md wi
 bin/dev interop               # commission the running demo with chip-tool and toggle a light
 bin/dev interop-python        # run a demo and drive it with connectedhomeip's Python controller (needs uv)
 bin/dev generate ~/src/matter.js   # regenerate Definitions.swift after a matter.js update
+bin/dev trust-store           # fetch the Matter registry's PAA roots again (RegistryPAAs.swift)
 ```
 
 ## Rules

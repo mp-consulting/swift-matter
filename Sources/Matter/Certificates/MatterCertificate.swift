@@ -244,7 +244,7 @@ public struct MatterCertificate: Hashable, Sendable {
             .integer(serialNumber),
             .sequence([.objectIdentifier(OID.ecdsaWithSHA256)]),
             Self.name(issuer),
-            .sequence([Self.time(notBefore, isNotAfter: false), Self.time(notAfter, isNotAfter: true)]),
+            .sequence([Self.time(notBefore), Self.time(notAfter)]),
             Self.name(subject),
             Self.subjectPublicKeyInfo(publicKey),
             .contextConstructed(3, [.sequence(extensions)]),
@@ -320,8 +320,10 @@ public struct MatterCertificate: Hashable, Sendable {
     /// Matter's epoch, 2000-01-01T00:00:00Z, in Unix seconds.
     public static let epochOffset: TimeInterval = 946_684_800
 
-    static func time(_ seconds: UInt32, isNotAfter: Bool) -> DER {
-        if isNotAfter && seconds == 0 { return .generalizedTime("99991231235959Z") }
+    /// A validity time in X.509 (Core §6.5, the certificate's validity): 0 is "no well-defined time", 99991231235959Z, for notBefore as for
+    /// notAfter, as connectedhomeip encodes it; a signature over the X.509 form verifies only if both sides agree.
+    static func time(_ seconds: UInt32) -> DER {
+        if seconds == 0 { return .generalizedTime("99991231235959Z") }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let date = Date(timeIntervalSince1970: epochOffset + TimeInterval(seconds))

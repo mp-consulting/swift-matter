@@ -129,9 +129,10 @@ public enum PASE {
 
     // MARK: - Initiator (the commissioner)
 
-    /// Establishes a PASE session with a commissionee, returning it.
-    public static func establish(with peer: PeerAddress, passcode: UInt32, layer: MessageLayer) async throws -> SessionInfo {
-        let exchange = await layer.newUnsecuredExchange(to: peer, protocolID: .secureChannel)
+    /// Establishes a PASE session with a commissionee, returning it. `peerParameters`: its record's MRP intervals.
+    public static func establish(with peer: PeerAddress, passcode: UInt32, layer: MessageLayer,
+                                 peerParameters: SessionParameters? = nil) async throws -> SessionInfo {
+        let exchange = await layer.newUnsecuredExchange(to: peer, protocolID: .secureChannel, peerParameters: peerParameters)
         let localSessionID = await layer.allocateSessionID()
         let requestPayload = TLVEncoder.encode(.structure([
             .field(1, .bytes(MatterCrypto.random(32))), .field(2, .unsigned(UInt64(localSessionID))), .field(3, .unsigned(0)),

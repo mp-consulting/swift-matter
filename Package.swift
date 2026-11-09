@@ -38,6 +38,11 @@ let package = Package(
             name: "MatterBench",
             dependencies: ["Matter", .product(name: "NIOCore", package: "swift-nio"), .product(name: "Logging", package: "swift-log")]
         ),
+        // Joins a real device as an extra administrator and prints its events (a spike for controller support).
+        .executableTarget(
+            name: "MatterProbe",
+            dependencies: ["Matter", .product(name: "NIOCore", package: "swift-nio"), .product(name: "Logging", package: "swift-log")]
+        ),
         .testTarget(name: "MatterTests", dependencies: [
             "Matter", .product(name: "NIOCore", package: "swift-nio"), .product(name: "NIOEmbedded", package: "swift-nio"),
         ]),

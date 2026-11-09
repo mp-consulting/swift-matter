@@ -101,7 +101,7 @@ func run() async throws {
     for _ in 0..<max(3, options.iterations / 40) {
         let (node, _, _, port) = try await makeBridge(devices: 1)
         let layer = MessageLayer(transport: UDPTransport(port: 0))
-        let commissioner = try Commissioner(layer: layer, fabricID: 1, nodeID: 0x1122)
+        let commissioner = try Commissioner(layer: layer, fabricID: 1, nodeID: 0x1122, trustStore: .test)
         try await commissioner.start()
         pase += try await measure(1) { _ = try await PASE.establish(with: try peer(port), passcode: 20202021, layer: layer) }
         commissioning += try await measure(1) { _ = try await commissioner.commission(try peer(port), passcode: 20202021, nodeID: 0x42) }
@@ -115,7 +115,7 @@ func run() async throws {
     let (node, _, lights, port) = try await makeBridge(devices: options.devices)
     let memoryWithDevices = residentMegabytes()
     let layer = MessageLayer(transport: UDPTransport(port: 0))
-    let commissioner = try Commissioner(layer: layer, fabricID: 1, nodeID: 0x1122)
+    let commissioner = try Commissioner(layer: layer, fabricID: 1, nodeID: 0x1122, trustStore: .test)
     try await commissioner.start()
     let session = try await commissioner.commission(try peer(port), passcode: 20202021, nodeID: 0x42).localSessionID
     let identity = await commissioner.identity
