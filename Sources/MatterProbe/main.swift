@@ -31,8 +31,8 @@ func fail(_ message: String) -> Never {
 
 func say(_ message: String) {
     let time = Date().formatted(.dateTime.hour().minute().second())
-    print("[\(time)] \(message)")
-    fflush(stdout)
+    // Unbuffered, so each line shows at once when piped (Glibc's `stdout` is not concurrency-safe to flush).
+    FileHandle.standardOutput.write(Data("[\(time)] \(message)\n".utf8))
 }
 
 /// The value of `--name value`, removed from `arguments`.
